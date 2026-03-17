@@ -24,7 +24,7 @@ import utils as ut # 工具模块
 import dynamic_logic as dyn  # 动态逻辑
 from data_io_1322 import read_data
 from viz_utils import visualize_truck_drone, compute_global_xlim_ylim, _normalize_decisions_for_viz
-
+import matplotlib.pyplot as plt
 DEBUG_QUICK_FILTER = False
 
 # 中文注释：ALNS 内循环调试（建议仅在定位问题时开启，避免刷屏）
@@ -276,33 +276,139 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
         lambda_scene0 = 0.0
 
     t0_start = time.time()
+    t0_start = time.time()
+    planner_type = str(ab_cfg.get("planner", "ALNS")).upper()
 
-    # 无论 ab_cfg["planner"] 是谁，t=0 统一调用 ALNS 获取优质基准
-    (best_route,
-     best_b2d,
-     best_cost,
-     best_truck_dist,
-     best_drone_dist,
-     best_total_late,
-     best_truck_time) = dyn.alns_truck_drone(
-        data,
-        base_to_drone_customers,
-        max_iter=int(ab_cfg.get('alns_max_iter', 1000)),
-        remove_fraction=float(ab_cfg.get("remove_fraction", 0.10)),
-        T_start=float(ab_cfg.get("sa_T_start", 50.0)),
-        T_end=float(ab_cfg.get("sa_T_end", 1.0)),
-        alpha_drone=0.3,
-        lambda_late=lambda_scene0,
-        truck_customers=truck_customers,
-        use_rl=False,
-        bases_to_visit=bases_visit_0,
-        ctx=ctx0
-    )
+    if planner_type == "FSTSP":
+        # ================= [Scene 0: 经典伴飞 FSTSP (Gurobi求解)] =================
+        import fstsp_solver, fstsp_evaluator
+        import pandas as pd
+        rows_0 = []
+        nd_depot = data.nodes[data.central_idx]
+        rows_0.append({"NODE_ID": data.central_idx, "NODE_TYPE": "truck_pos", "ORIG_X": float(nd_depot['x']),
+                       "ORIG_Y": float(nd_depot['y']), "EFFECTIVE_DUE": 1e9})
+        rows_0.append({"NODE_ID": data.central_idx, "NODE_TYPE": "central", "ORIG_X": float(nd_depot['x']),
+                       "ORIG_Y": float(nd_depot['y']), "EFFECTIVE_DUE": 1e9})
+        for c in range(len(data.nodes)):
+            if str(data.nodes[c].get('node_type', '')).lower() == 'customer':
+                nd_c = data.nodes[c]
+                rows_0.append(
+                    {"NODE_ID": c, "NODE_TYPE": "customer", "ORIG_X": float(nd_c['x']), "ORIG_Y": float(nd_c['y']),
+                     "EFFECTIVE_DUE": float(nd_c.get('effective_due', nd_c.get('due_time', 0.0)))})
+        df_0 = pd.DataFrame(rows_0)
+
+        res_0 = fstsp_solver.solve_fstsp_return_from_df(
+            df_0,
+            E_roundtrip_km=float(ab_cfg.get("E_roundtrip_km", 10.0)),
+            truck_speed_kmh=float(ab_cfg.get("truck_speed_kmh", 30.0)),
+            truck_road_factor=float(ab_cfg.get("truck_road_factor", 1.5)),
+            drone_speed_kmh=float(ab_cfg.get("drone_speed_kmh", 60.0)),
+            time_limit=float(ab_cfg.get("grb_time_limit", 1800.0)),  # 给足时间求最优
+            start_node=data.central_idx, start_time_h=0.0
+        )
+        best_route = res_0["route"]
+        best_triplets = res_0.get("fstsp_triplets", [])
+        best_b2d = res_0.get("drone_assign", {})  # 兼容用
+
+        full_eval0 = fstsp_evaluator.evaluate_fstsp_system(
+            data, best_route, best_triplets,
+            truck_speed_units=sim.TRUCK_SPEED_UNITS, drone_speed_units=sim.DRONE_SPEED_UNITS,
+            truck_road_factor=sim.TRUCK_ROAD_FACTOR, alpha_drone=0.3, lambda_late=lambda_scene0
+        )
+        best_cost = full_eval0["cost"]
+        best_truck_dist = full_eval0["truck_dist"]
+        best_drone_dist = full_eval0["drone_dist"]
+        best_total_late = full_eval0["total_late"]
+
+        arrival_times = full_eval0["arrival_times"]
+        depart_times = {}  # FSTSP简化
+        finish_times = full_eval0["finish_times"]
+        base_finish_times = {}
+
+    elif planner_type in ["GRB", "GUROBI"]:
+        # ================= [Scene 0: 你的主方法 / 纯卡车 (Gurobi求解)] =================
+        import milp_solver as grb
+        import pandas as pd
+        rows_0 = []
+        nd_depot = data.nodes[data.central_idx]
+        # 补齐 READY_TIME 和 DUE_TIME
+        rows_0.append({"NODE_ID": data.central_idx, "NODE_TYPE": "truck_pos", "ORIG_X": float(nd_depot['x']),
+                       "ORIG_Y": float(nd_depot['y']), "READY_TIME": 0.0, "DUE_TIME": 1e9, "EFFECTIVE_DUE": 1e9})
+        rows_0.append({"NODE_ID": data.central_idx, "NODE_TYPE": "central", "ORIG_X": float(nd_depot['x']),
+                       "ORIG_Y": float(nd_depot['y']), "READY_TIME": 0.0, "DUE_TIME": 1e9, "EFFECTIVE_DUE": 1e9})
+        for b in range(len(data.nodes)):
+            if str(data.nodes[b].get('node_type', '')).lower() == 'base':
+                rows_0.append({"NODE_ID": b, "NODE_TYPE": "base", "ORIG_X": float(data.nodes[b]['x']),
+                               "ORIG_Y": float(data.nodes[b]['y']), "READY_TIME": 0.0, "DUE_TIME": 1e9,
+                               "EFFECTIVE_DUE": 1e9})
+
+        for c in range(len(data.nodes)):
+            if str(data.nodes[c].get('node_type', '')).lower() == 'customer':
+                nd_c = data.nodes[c]
+                rows_0.append({
+                    "NODE_ID": c,
+                    "NODE_TYPE": "customer",
+                    "ORIG_X": float(nd_c['x']),
+                    "ORIG_Y": float(nd_c['y']),
+                    "READY_TIME": float(nd_c.get('ready_time', 0.0)),
+                    "DUE_TIME": float(nd_c.get('due_time', 0.0)),
+                    "EFFECTIVE_DUE": float(nd_c.get('effective_due', nd_c.get('due_time', 0.0)))
+                })
+        df_0 = pd.DataFrame(rows_0)
+
+        # 识别是否为“纯卡车模式”
+        ft = set()
+        allowed_bases_grb = set([i for i, n in enumerate(data.nodes) if n.get('node_type') == 'base'])
+        if bool(ab_cfg.get("force_truck_mode", False)):
+            for c in range(len(data.nodes)):
+                if str(data.nodes[c].get('node_type', '')).lower() == 'customer': ft.add(c)
+            allowed_bases_grb = set()
+
+        res_0 = grb.solve_milp_return_from_df(
+            df_0,
+            unit_per_km=float(ab_cfg.get("unit_per_km", 5.0)),
+            E_roundtrip_km=float(ab_cfg.get("E_roundtrip_km", 10.0)),
+            truck_speed_kmh=float(ab_cfg.get("truck_speed_kmh", 30.0)),
+            truck_road_factor=float(ab_cfg.get("truck_road_factor", 1.5)),
+            drone_speed_kmh=float(ab_cfg.get("drone_speed_kmh", 60.0)),
+            alpha=0.3, lambda_late=lambda_scene0,
+            time_limit=float(ab_cfg.get("grb_time_limit", 1800.0)),
+            mip_gap=float(ab_cfg.get("grb_mip_gap", 0.0)),
+            allowed_bases=allowed_bases_grb, visited_bases_for_drone=set(), allow_depot_as_base=False,
+            force_truck_customers=ft, start_node=data.central_idx, start_time_h=0.0
+        )
+        best_route = res_0["route"]
+        best_b2d = res_0["drone_assign"]
+        best_triplets = []
+
+        # 使用统一口径评估
+        full_eval0 = sim.evaluate_full_system(data, best_route, best_b2d, alpha_drone=0.3, lambda_late=lambda_scene0)
+        best_cost = full_eval0["cost"]
+        best_truck_dist = full_eval0["truck_dist"]
+        best_drone_dist = full_eval0["drone_dist"]
+        best_total_late = full_eval0["total_late"]
+
+        arrival_times, _, _ = sim.compute_truck_schedule(data, best_route, start_time=0.0)
+        depart_times, finish_times, base_finish_times = sim.compute_multi_drone_schedule(data, best_b2d, arrival_times)
+
+    else:
+        # ================= [Scene 0: 原有的 ALNS 共享基线] =================
+        (best_route, best_b2d, best_cost, best_truck_dist, best_drone_dist, best_total_late,
+         best_truck_time) = dyn.alns_truck_drone(
+            data, base_to_drone_customers, max_iter=int(ab_cfg.get('alns_max_iter', 1000)),
+            remove_fraction=float(ab_cfg.get("remove_fraction", 0.10)), T_start=float(ab_cfg.get("sa_T_start", 50.0)),
+            T_end=float(ab_cfg.get("sa_T_end", 1.0)), alpha_drone=0.3, lambda_late=lambda_scene0,
+            truck_customers=truck_customers, use_rl=False, bases_to_visit=bases_visit_0, ctx=ctx0
+        )
+        best_triplets = []
+        arrival_times, _, _ = sim.compute_truck_schedule(data, best_route, start_time=0.0)
+        depart_times, finish_times, base_finish_times = sim.compute_multi_drone_schedule(data, best_b2d, arrival_times)
+        full_eval0 = sim.evaluate_full_system(data, best_route, best_b2d, alpha_drone=0.3, lambda_late=lambda_scene0)
+
     t0_end = time.time()
     scene0_runtime = t0_end - t0_start
     if verbose:
-        print(f"    [SCENE 0] Shared ALNS Baseline generated, Runtime={scene0_runtime:.3f} s")
-
+        print(f"    [SCENE 0] Initial Solution Generated (Planner: {planner_type}), Runtime={scene0_runtime:.3f} s")
     # ================= [保留：纯卡车路线方向校正] =================
     # 目的：强制翻转“逆序”路线，防止卡车过早服务大ID客户，导致动态请求失效。
     is_truck_only_mode = bool(ab_cfg.get("force_truck_mode", False))
@@ -381,8 +487,45 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
             print(f"  base node_id={n['node_id']}, type={n['node_type']}, 完成时间={t_fin:.2f}h")
 
     if enable_plot:
-        visualize_truck_drone(data, best_route, best_b2d, title="Scenario 0: original (no relocation)")
+        planner_type = str(ab_cfg.get("planner", "ALNS")).upper()
+        if planner_type == "FSTSP":
+            # 专门为 FSTSP 绘制 (i, j, k) 真实轨迹
+            plt.figure(figsize=(10, 8), dpi=120)
+            plt.title(f"Scenario 0: FSTSP (Cost: {best_cost:.2f})")
 
+            # 画节点
+            for node in data.nodes:
+                if node['node_type'] == 'central':
+                    plt.scatter(node['x'], node['y'], c='yellow', marker='s', s=150, edgecolors='black', zorder=5)
+                elif node['node_type'] == 'customer':
+                    plt.scatter(node['x'], node['y'], c='white', edgecolors='blue', zorder=3)
+
+            # 画卡车路径 (红色实线)
+            for i in range(len(best_route) - 1):
+                p1 = data.nodes[best_route[i]]
+                p2 = data.nodes[best_route[i + 1]]
+                plt.annotate("", xy=(p2['x'], p2['y']), xytext=(p1['x'], p1['y']),
+                             arrowprops=dict(arrowstyle="-|>", color="red", lw=1.5), zorder=2)
+
+            # 画无人机三元组 (浅蓝色虚线)
+            for (launch_id, cust_id, rend_id) in best_triplets:
+                nL = data.nodes[launch_id]
+                nC = data.nodes[cust_id]
+                nR = data.nodes[rend_id]
+                plt.scatter(nC['x'], nC['y'], c='blue', zorder=4)  # 无人机服务的客户涂实心
+                # 去程
+                plt.annotate("", xy=(nC['x'], nC['y']), xytext=(nL['x'], nL['y']),
+                             arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
+                # 回程 (终于可以指向正确的回收点了！)
+                plt.annotate("", xy=(nR['x'], nR['y']), xytext=(nC['x'], nC['y']),
+                             arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
+
+            plt.axis('equal')
+            plt.grid(True, linestyle='--', alpha=0.5)
+            plt.show()
+        else:
+            # 你原来的 ALNS / 独立基站模式画图
+            visualize_truck_drone(data, best_route, best_b2d, title="Scenario 0: original (no relocation)")
     # ===================== 4) 结果表：先记场景0（FULL口径）=====================
     scenario_results = []
     report_lambda = float(ab_cfg.get("lambda_late", 50.0))
@@ -440,6 +583,15 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
         full_route_cur = best_route.copy()
         full_b2d_cur = {b: cs.copy() for b, cs in best_b2d.items()}
 
+        # 智能适配三元组：如果是 FSTSP 生成的，完美继承；否则构造静态兜底格式
+        if ab_cfg.get("planner") == "FSTSP":
+            full_triplets_cur = best_triplets.copy()
+        else:
+            full_triplets_cur = []
+            for b, cs in best_b2d.items():
+                for c in cs:
+                    full_triplets_cur.append((b, c, b))
+
         full_arrival_cur = arrival_times  # 全局从0开始
         full_depart_cur = depart_times  # 全局从0开始
         full_finish_cur = finish_all_times  # 全局从0开始（包含卡车+无人机完成时刻）
@@ -470,23 +622,39 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
             except Exception:
                 drone_set_before_viz = set()
 
-            # 调用动态逻辑封装函数
-            step_res = dyn.run_decision_epoch(
-                decision_time=decision_time,
-                t_prev=t_prev,
-                scene_idx=scene_idx,
-                data_cur=data_cur,
-                full_route_cur=full_route_cur,
-                full_b2d_cur=full_b2d_cur,
-                full_arrival_cur=full_arrival_cur,
-                full_depart_cur=full_depart_cur,
-                full_finish_cur=full_finish_cur,
-                offline_groups=offline_groups,
-                nodeid2idx=nodeid2idx,
-                ab_cfg=ab_cfg,
-                seed=seed,
-                verbose=verbose
-            )
+            if ab_cfg.get("planner") == "FSTSP":
+                import fstsp_dynamic_runner
+                step_res = fstsp_dynamic_runner.run_fstsp_epoch(
+                    decision_time=decision_time,
+                    t_prev=t_prev,
+                    scene_idx=scene_idx,
+                    data_cur=data_cur,
+                    full_route_cur=full_route_cur,
+                    full_triplets_cur=full_triplets_cur,  # FSTSP 传递三元组
+                    full_arrival_cur=full_arrival_cur,
+                    offline_groups=offline_groups,
+                    nodeid2idx=nodeid2idx,
+                    ab_cfg=ab_cfg,
+                    seed=seed,
+                    verbose=verbose
+                )
+            else:
+                step_res = dyn.run_decision_epoch(
+                    decision_time=decision_time,
+                    t_prev=t_prev,
+                    scene_idx=scene_idx,
+                    data_cur=data_cur,
+                    full_route_cur=full_route_cur,
+                    full_b2d_cur=full_b2d_cur,  # ALNS 传递 b2d
+                    full_arrival_cur=full_arrival_cur,
+                    full_depart_cur=full_depart_cur,
+                    full_finish_cur=full_finish_cur,
+                    offline_groups=offline_groups,
+                    nodeid2idx=nodeid2idx,
+                    ab_cfg=ab_cfg,
+                    seed=seed,
+                    verbose=verbose
+                )
 
             # 1. 处理 Early Stop
             if step_res.get('break', False):
@@ -516,29 +684,75 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
 
             # 5. 可视化 (主文件负责画图)
             if enable_plot and 'viz_pack' in step_res:
-                vp = step_res['viz_pack']
 
+                vp = step_res['viz_pack']
                 dec_viz = _normalize_decisions_for_viz(data_before_viz, vp['decisions'])
 
-                visualize_truck_drone(
-                    vp['data'],
-                    vp['route'],
-                    vp['b2d'],
-                    title=f"Scenario {scene_idx} (t={decision_time:.2f}h)",
-                    xlim=global_xlim,
-                    ylim=global_ylim,
-                    decision_time=decision_time,
-                    truck_arrival=step_res['full_arrival_next'],  # ✅ 用 step_res 的 next
-                    drone_finish=step_res['full_finish_next'],  # 这里注意用 drone finish map
-                    prefix_route=vp['prefix_route'],
-                    virtual_pos=vp['virtual_pos'],
-                    relocation_decisions=dec_viz,
-                    drone_set_before=drone_set_before_viz
-                )
+                if ab_cfg.get("planner") == "FSTSP":
+                    # 专属 FSTSP 动态全景画图
+                    plt.figure(figsize=(10, 8), dpi=120)
+                    plt.title(f"Scenario {scene_idx} FSTSP (t={decision_time:.2f}h)")
+
+                    # 画中心仓库和未服务/已服务节点
+                    for node in vp['data'].nodes:
+                        if node['node_type'] == 'central':
+                            plt.scatter(node['x'], node['y'], c='yellow', marker='s', s=150, edgecolors='black',
+                                        zorder=5)
+                        elif node['node_type'] == 'customer':
+                            plt.scatter(node['x'], node['y'], c='white', edgecolors='blue', zorder=3)
+
+                    # 画卡车当前位置（虚拟点）
+                    if vp.get('virtual_pos'):
+                        plt.scatter(vp['virtual_pos'][0], vp['virtual_pos'][1], c='red', marker='*', s=200,
+                                    edgecolors='black', zorder=7)
+
+                    # 画卡车路径
+                    r = vp['route']
+                    for i in range(len(r) - 1):
+                        p1 = vp['data'].nodes[r[i]]
+                        p2 = vp['data'].nodes[r[i + 1]]
+                        plt.annotate("", xy=(p2['x'], p2['y']), xytext=(p1['x'], p1['y']),
+                                     arrowprops=dict(arrowstyle="-|>", color="red", lw=1.5), zorder=2)
+
+                    # 画无人机伴飞路径
+                    for (launch_id, cust_id, rend_id) in vp['triplets']:
+                        nL = vp['data'].nodes[launch_id]
+                        nC = vp['data'].nodes[cust_id]
+                        nR = vp['data'].nodes[rend_id]
+                        plt.scatter(nC['x'], nC['y'], c='blue', zorder=4)  # 无人机客户实心点
+                        plt.annotate("", xy=(nC['x'], nC['y']), xytext=(nL['x'], nL['y']),
+                                     arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
+                        plt.annotate("", xy=(nR['x'], nR['y']), xytext=(nC['x'], nC['y']),
+                                     arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
+
+                    plt.axis('equal')
+                    plt.grid(True, linestyle='--', alpha=0.5)
+                    plt.show()
+                else:
+                    # 原来的 ALNS/独立基站模式画图
+                    visualize_truck_drone(
+                        vp['data'],
+                        vp['route'],
+                        vp['b2d'],
+                        title=f"Scenario {scene_idx} (t={decision_time:.2f}h)",
+                        xlim=global_xlim,
+                        ylim=global_ylim,
+                        decision_time=decision_time,
+                        truck_arrival=step_res['full_arrival_next'],
+                        drone_finish=step_res['full_finish_next'],
+                        prefix_route=vp['prefix_route'],
+                        virtual_pos=vp['virtual_pos'],
+                        relocation_decisions=dec_viz,
+                        drone_set_before=drone_set_before_viz
+                    )
             # 2. 更新状态
             data_cur = step_res['data_next']
             full_route_cur = step_res['full_route_next']
-            full_b2d_cur = step_res['full_b2d_next']
+            # 追加 FSTSP 三元组状态更新
+            if ab_cfg.get("planner") == "FSTSP":
+                full_triplets_cur = step_res['full_triplets_next']
+            else:
+                full_b2d_cur = step_res['full_b2d_next']
             full_arrival_cur = step_res['full_arrival_next']
             full_depart_cur = step_res['full_depart_next']
             full_finish_cur = step_res['full_finish_next']
@@ -650,7 +864,7 @@ def run_compare_suite(
         "name": "Classic_FSTSP",
         "planner": "FSTSP",  # 触发刚写的 dynamic_logic 拦截
         "force_truck_mode": False,
-        "grb_time_limit": 600,  # Gurobi 求解极慢，建议给 600 秒甚至更多
+        "grb_time_limit": 1800,  # Gurobi 求解极慢，建议给 600 秒甚至更多
     })
     # -----------------------------------------------
     # Gurobi: MILP 基线
@@ -682,6 +896,7 @@ def run_compare_suite(
     all_groups = [
         ("Proposed", cfg_alns_hybrid),
         ("Gurobi_TruckOnly", cfg_grb_truck),
+        ("FSTSP", cfg_fstsp),
         ("Greedy", cfg_greedy),
         ("GA", cfg_ga),
         ("Gurobi", cfg_grb),
@@ -815,8 +1030,9 @@ def main():
         "drone_first_pick": "min_obj",
     })
 
-    cfg["planner"] = "GRB"  # 让 dynamic_logic 走 gurobi 分支
-    # cfg["planner"] = "ALNS"
+    # cfg["planner"] = "GRB"  # 让 dynamic_logic 走 gurobi 分支
+    cfg["planner"] = "ALNS"
+    # cfg["planner"] = "FSTSP"
     cfg["grb_time_limit"] = 1800  # 每个决策点的 MILP 限时（秒）
     cfg["grb_mip_gap"] = 0.00  # 可选
     cfg["grb_verbose"] = 0  # 可选：0 安静，1 输出更多
@@ -842,7 +1058,7 @@ def main():
 
     # ===== 3) 运行模式开关 =====
     # 3.4 对照组套件：G0–G3（动态对比）
-    RUN_COMPARE_SUITE = False
+    RUN_COMPARE_SUITE = True
 
     if RUN_COMPARE_SUITE:
         import os, time, csv, copy
@@ -854,8 +1070,8 @@ def main():
         SUITE_LEVEL = "model"  # "model" 或 "algo"
         if SUITE_LEVEL == "model":
             # 模型层面：纯卡车 vs 混合（主方法）
-            # TARGET_METHODS = ["TruckOnly", "Proposed", "FSTSP"]
-            TARGET_METHODS = ["Gurobi_TruckOnly"]
+            TARGET_METHODS = ["Gurobi", "Gurobi_TruckOnly", "FSTSP"]
+            # TARGET_METHODS = ["Gurobi_TruckOnly"]
         elif SUITE_LEVEL == "algo":
             # 算法层面：固定混合模型，对比多算法
             # TARGET_METHODS = ["Gurobi", "Greedy", "GA", "Proposed", "VNS"]
@@ -884,7 +1100,7 @@ def main():
                 perturbation_times=perturbation_times,
                 events_path=events_path,
                 out_dir=run_dir,
-                enable_plot=False,
+                enable_plot=True,
                 verbose=False,
                 target_methods=TARGET_METHODS,
             )
