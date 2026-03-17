@@ -374,9 +374,19 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
             alpha=0.3, lambda_late=lambda_scene0,
             time_limit=float(ab_cfg.get("grb_time_limit", 1800.0)),
             mip_gap=float(ab_cfg.get("grb_mip_gap", 0.0)),
-            allowed_bases=allowed_bases_grb, visited_bases_for_drone=set(), allow_depot_as_base=False,
-            force_truck_customers=ft, start_node=data.central_idx, start_time_h=0.0
+            allowed_bases=allowed_bases_grb,
+            visited_bases_for_drone=set(),
+            allow_depot_as_base=True,  # <--- 🚨 核心修复：让主模型也能在t=0时从仓库起飞无人机！
+            force_truck_customers=ft,
+            start_node=data.central_idx,
+            start_time_h=0.0
         )
+
+        # [防崩溃护栏]
+        if int(res_0.get("sol_count", 0)) <= 0:
+            print("🚨 Gurobi 在 t=0 求解失败（超时未找到可行解）！请在 milp_solver.py 中减小 M_time，或增大 time_limit。")
+            return
+
         best_route = res_0["route"]
         best_b2d = res_0["drone_assign"]
         best_triplets = []
