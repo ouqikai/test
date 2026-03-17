@@ -17,7 +17,7 @@
 
 说明：本文件仍保持可直接运行（main()/main_cli()），便于你现有实验脚本与复现流程不改。
 """
-import os, time, json, csv, copy
+import os, time, json, csv, copy, math
 import operatorsnew as ops  # 引入算子模块
 import simulation as sim  # 引入仿真模块
 import utils as ut # 工具模块
@@ -25,6 +25,10 @@ import dynamic_logic as dyn  # 动态逻辑
 from data_io_1322 import read_data
 from viz_utils import visualize_truck_drone, compute_global_xlim_ylim, _normalize_decisions_for_viz
 import matplotlib.pyplot as plt
+import milp_solver as grb
+import pandas as pd
+import fstsp_solver, fstsp_evaluator
+import fstsp_dynamic_runner
 DEBUG_QUICK_FILTER = False
 
 # 中文注释：ALNS 内循环调试（建议仅在定位问题时开启，避免刷屏）
@@ -281,8 +285,7 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
 
     if planner_type == "FSTSP":
         # ================= [Scene 0: 经典伴飞 FSTSP (Gurobi求解)] =================
-        import fstsp_solver, fstsp_evaluator
-        import pandas as pd
+
         rows_0 = []
         nd_depot = data.nodes[data.central_idx]
         rows_0.append({"NODE_ID": data.central_idx, "NODE_TYPE": "truck_pos", "ORIG_X": float(nd_depot['x']),
@@ -327,8 +330,7 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
 
     elif planner_type in ["GRB", "GUROBI"]:
         # ================= [Scene 0: 你的主方法 / 纯卡车 (Gurobi求解)] =================
-        import milp_solver as grb
-        import pandas as pd
+
         rows_0 = []
         nd_depot = data.nodes[data.central_idx]
         # 补齐 READY_TIME 和 DUE_TIME
@@ -445,15 +447,19 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
             if verbose:
                 print(f"[TRUCK-TUNE] ✅ 翻转完成。新状态: Cost={best_cost:.3f}, Late={best_total_late:.3f}")
     # ==========================================================
-
-    arrival_times, total_time, total_late = sim.compute_truck_schedule(
-        data, best_route, start_time=0.0, speed=sim.TRUCK_SPEED_UNITS
-    )
-    depart_times, finish_times, base_finish_times = sim.compute_multi_drone_schedule(
-        data, best_b2d, arrival_times,
-        num_drones_per_base=sim.NUM_DRONES_PER_BASE,
-        drone_speed=sim.DRONE_SPEED_UNITS
-    )
+    # 🚨 核心修复：防止 FSTSP 的精确时间轴被纯卡车模拟器覆盖！
+    if planner_type != "FSTSP":
+        arrival_times, total_time, total_late = sim.compute_truck_schedule(
+            data, best_route, start_time=0.0, speed=sim.TRUCK_SPEED_UNITS
+        )
+        depart_times, finish_times, base_finish_times = sim.compute_multi_drone_schedule(
+            data, best_b2d, arrival_times,
+            num_drones_per_base=sim.NUM_DRONES_PER_BASE,
+            drone_speed=sim.DRONE_SPEED_UNITS
+        )
+    else:
+        # FSTSP 早就用 fstsp_evaluator.py 算好了精确的等待时间，直接继承！
+        total_time = full_eval0["system_time"]
 
     # ===================== [PROMISE] 3.5) 用场景0 ETA0 生成并冻结平台承诺窗 =====================
     # 中文注释：场景0不考虑时间窗/迟到，仅用于生成“平台承诺窗口”（PROM_READY/PROM_DUE），并冻结用于后续所有场景。
@@ -499,39 +505,71 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
     if enable_plot:
         planner_type = str(ab_cfg.get("planner", "ALNS")).upper()
         if planner_type == "FSTSP":
-            # 专门为 FSTSP 绘制 (i, j, k) 真实轨迹
-            plt.figure(figsize=(10, 8), dpi=120)
+            # 专门为 FSTSP 绘制 (i, j, k) 真实轨迹 - 对齐主视觉规范
+            plt.figure(figsize=(8, 6), dpi=120)
             plt.title(f"Scenario 0: FSTSP (Cost: {best_cost:.2f})")
+            ax = plt.gca()
+            ax.set_aspect('equal', adjustable='box')
+            ax.grid(True, linestyle='--', color='gray', alpha=0.6)
+
+            # 区分无人机客户
+            drone_custs = {t[1] for t in best_triplets}
 
             # 画节点
-            for node in data.nodes:
+            for idx, node in enumerate(data.nodes):
                 if node['node_type'] == 'central':
-                    plt.scatter(node['x'], node['y'], c='yellow', marker='s', s=150, edgecolors='black', zorder=5)
+                    ax.scatter(node['x'], node['y'], c='yellow', marker='s', s=90, edgecolors='black', zorder=6)
+                elif node['node_type'] == 'base':
+                    ax.scatter(node['x'], node['y'], c='yellow', marker='*', s=120, edgecolors='black', zorder=6)
                 elif node['node_type'] == 'customer':
-                    plt.scatter(node['x'], node['y'], c='white', edgecolors='blue', zorder=3)
+                    if idx in drone_custs:
+                        ax.scatter(node['x'], node['y'], c='blue', s=25, zorder=5)  # 无人机客户实心
+                    else:
+                        ax.scatter(node['x'], node['y'], facecolors='none', edgecolors='blue', s=25, linewidths=1.5,
+                                   zorder=5)  # 卡车客户空心
 
-            # 画卡车路径 (红色实线)
+            # 画卡车路径 (红色虚线，因为是 t=0 还未出发)
             for i in range(len(best_route) - 1):
                 p1 = data.nodes[best_route[i]]
                 p2 = data.nodes[best_route[i + 1]]
-                plt.annotate("", xy=(p2['x'], p2['y']), xytext=(p1['x'], p1['y']),
-                             arrowprops=dict(arrowstyle="-|>", color="red", lw=1.5), zorder=2)
+                ax.plot([p1['x'], p2['x']], [p1['y'], p2['y']], color='red', linestyle='--', linewidth=1.0, alpha=0.45,
+                        zorder=3)
+                ax.annotate("", xy=(p2['x'], p2['y']), xytext=(p1['x'], p1['y']),
+                            arrowprops=dict(arrowstyle="-|>", color="red", lw=1.2, alpha=0.45), zorder=4)
 
             # 画无人机三元组 (浅蓝色虚线)
             for (launch_id, cust_id, rend_id) in best_triplets:
                 nL = data.nodes[launch_id]
                 nC = data.nodes[cust_id]
                 nR = data.nodes[rend_id]
-                plt.scatter(nC['x'], nC['y'], c='blue', zorder=4)  # 无人机服务的客户涂实心
                 # 去程
-                plt.annotate("", xy=(nC['x'], nC['y']), xytext=(nL['x'], nL['y']),
-                             arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
-                # 回程 (终于可以指向正确的回收点了！)
-                plt.annotate("", xy=(nR['x'], nR['y']), xytext=(nC['x'], nC['y']),
-                             arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
+                ax.plot([nL['x'], nC['x']], [nL['y'], nC['y']], color='skyblue', linestyle='--', linewidth=1.5,
+                        zorder=3)
+                ax.annotate("", xy=(nC['x'], nC['y']), xytext=(nL['x'], nL['y']),
+                            arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=4)
+                # 回程
+                ax.plot([nC['x'], nR['x']], [nC['y'], nR['y']], color='skyblue', linestyle='--', linewidth=1.5,
+                        zorder=3)
+                ax.annotate("", xy=(nR['x'], nR['y']), xytext=(nC['x'], nC['y']),
+                            arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=4)
 
-            plt.axis('equal')
-            plt.grid(True, linestyle='--', alpha=0.5)
+            # 添加图例占位
+            from matplotlib.lines import Line2D
+            legend_elements = [
+                Line2D([0], [0], marker='s', color='w', markerfacecolor='yellow', markeredgecolor='black', markersize=9,
+                       label='中心仓库'),
+                Line2D([0], [0], marker='*', color='w', markerfacecolor='yellow', markeredgecolor='black',
+                       markersize=10, label='基站'),
+                Line2D([0], [0], marker='o', color='blue', markerfacecolor='white', markeredgecolor='blue',
+                       markersize=8, label='卡车客户'),
+                Line2D([0], [0], marker='o', color='blue', markerfacecolor='blue', markeredgecolor='blue', markersize=8,
+                       label='无人机客户'),
+                Line2D([0], [0], color='red', lw=1.6, label='卡车路径'),
+                Line2D([0], [0], color='skyblue', lw=1.2, linestyle='--', label='无人机路径'),
+            ]
+            ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1.0), frameon=False, fontsize=9)
+            fig = plt.gcf()
+            fig.subplots_adjust(right=0.80)
             plt.show()
         else:
             # 你原来的 ALNS / 独立基站模式画图
@@ -633,7 +671,6 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
                 drone_set_before_viz = set()
 
             if ab_cfg.get("planner") == "FSTSP":
-                import fstsp_dynamic_runner
                 step_res = fstsp_dynamic_runner.run_fstsp_epoch(
                     decision_time=decision_time,
                     t_prev=t_prev,
@@ -699,44 +736,141 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
                 dec_viz = _normalize_decisions_for_viz(data_before_viz, vp['decisions'])
 
                 if ab_cfg.get("planner") == "FSTSP":
-                    # 专属 FSTSP 动态全景画图
-                    plt.figure(figsize=(10, 8), dpi=120)
+                    # 专属 FSTSP 动态全景画图 (完全对齐主框架视觉元素)
+                    plt.figure(figsize=(8, 6), dpi=120)
                     plt.title(f"Scenario {scene_idx} FSTSP (t={decision_time:.2f}h)")
+                    ax = plt.gca()
+                    ax.set_xlim(global_xlim)
+                    ax.set_ylim(global_ylim)
+                    ax.set_aspect('equal', adjustable='box')
+                    ax.grid(True, linestyle='--', color='gray', alpha=0.6)
 
-                    # 画中心仓库和未服务/已服务节点
-                    for node in vp['data'].nodes:
+                    data_viz = vp['data']
+                    route_viz = vp['route']
+                    triplets_viz = vp['triplets']
+
+                    # 1. 甄别无人机客户集合与卡车客户集合
+                    drone_custs = {t[1] for t in triplets_viz}
+                    truck_custs = set(route_viz) - {data_viz.central_idx} - drone_custs
+                    truck_custs = {c for c in truck_custs if data_viz.nodes[c].get('node_type') == 'customer'}
+
+                    # 2. 甄别已服务/未服务状态
+                    served_custs = set()
+                    for c in range(len(data_viz.nodes)):
+                        if data_viz.nodes[c].get('node_type') == 'customer':
+                            fin_t = step_res['full_finish_next'].get(c, float('inf'))
+                            arr_t = step_res['full_arrival_next'].get(c, float('inf'))
+                            # 无人机客户看 finish, 卡车客户看 arrival
+                            if c in drone_custs and fin_t <= decision_time + 1e-9:
+                                served_custs.add(c)
+                            elif c in truck_custs and arr_t <= decision_time + 1e-9:
+                                served_custs.add(c)
+
+                    # 3. 画中心仓库和基站
+                    for idx, node in enumerate(data_viz.nodes):
                         if node['node_type'] == 'central':
-                            plt.scatter(node['x'], node['y'], c='yellow', marker='s', s=150, edgecolors='black',
-                                        zorder=5)
-                        elif node['node_type'] == 'customer':
-                            plt.scatter(node['x'], node['y'], c='white', edgecolors='blue', zorder=3)
+                            ax.scatter(node['x'], node['y'], marker='s', s=90, c='yellow', edgecolors='black', zorder=6)
+                        elif node['node_type'] == 'base':
+                            ax.scatter(node['x'], node['y'], marker='*', s=120, c='yellow', edgecolors='black',
+                                       zorder=6)
 
-                    # 画卡车当前位置（虚拟点）
+                    # 4. 画客户点
+                    for c in range(len(data_viz.nodes)):
+                        if data_viz.nodes[c].get('node_type') != 'customer': continue
+                        x, y = data_viz.nodes[c]['x'], data_viz.nodes[c]['y']
+                        is_served = c in served_custs
+
+                        if c in drone_custs:
+                            color = 'gray' if is_served else 'blue'
+                            alpha = 0.6 if is_served else 1.0
+                            ax.scatter(x, y, c=color, s=25, alpha=alpha, zorder=5)
+                        elif c in truck_custs:
+                            ecolor = 'gray' if is_served else 'blue'
+                            alpha = 0.6 if is_served else 1.0
+                            ax.scatter(x, y, facecolors='none', edgecolors=ecolor, s=25, linewidths=1.5, alpha=alpha,
+                                       zorder=5)
+
+                    # 5. 画位置变更痕迹 (复用 dec_viz)
+                    if dec_viz:
+                        for (cidx, nid, dec, reason, ox, oy, nx, ny) in dec_viz:
+                            if ox is None or math.isnan(ox): continue
+                            ax.plot([ox, nx], [oy, ny], linestyle="--", color="gray", linewidth=1.5, zorder=5)
+                            mx, my = (ox + nx) / 2.0, (oy + ny) / 2.0
+                            ax.text(mx + 0.6, my + 0.6, f"{nid}", fontsize=8, color="gray", zorder=5)
+
+                            if str(dec).upper() == "ACCEPT":
+                                ax.scatter([ox], [oy], s=25, facecolors="none", edgecolors="black", linewidths=1.5,
+                                           zorder=6)
+                                if cidx in drone_custs:
+                                    ax.scatter([nx], [ny], s=25, c="red", edgecolors="red", linewidths=1.0, zorder=6)
+                                else:
+                                    ax.scatter([nx], [ny], s=25, facecolors="none", edgecolors="red", linewidths=1.5,
+                                               zorder=6)
+                            else:
+                                ax.scatter([nx], [ny], s=55, marker="x", c="black", linewidths=2.2, zorder=15)
+
+                    # 6. 画卡车当前位置（虚拟点）
                     if vp.get('virtual_pos'):
-                        plt.scatter(vp['virtual_pos'][0], vp['virtual_pos'][1], c='red', marker='*', s=200,
-                                    edgecolors='black', zorder=7)
+                        ax.scatter(vp['virtual_pos'][0], vp['virtual_pos'][1], c='red', marker='*', s=200,
+                                   edgecolors='black', zorder=7)
 
-                    # 画卡车路径
-                    r = vp['route']
-                    for i in range(len(r) - 1):
-                        p1 = vp['data'].nodes[r[i]]
-                        p2 = vp['data'].nodes[r[i + 1]]
-                        plt.annotate("", xy=(p2['x'], p2['y']), xytext=(p1['x'], p1['y']),
-                                     arrowprops=dict(arrowstyle="-|>", color="red", lw=1.5), zorder=2)
+                    # 7. 画卡车路径 (根据是否已到达区分实线和虚线)
+                    for i in range(len(route_viz) - 1):
+                        p1 = route_viz[i]
+                        p2 = route_viz[i + 1]
+                        x1, y1 = data_viz.nodes[p1]['x'], data_viz.nodes[p1]['y']
+                        x2, y2 = data_viz.nodes[p2]['x'], data_viz.nodes[p2]['y']
 
-                    # 画无人机伴飞路径
-                    for (launch_id, cust_id, rend_id) in vp['triplets']:
-                        nL = vp['data'].nodes[launch_id]
-                        nC = vp['data'].nodes[cust_id]
-                        nR = vp['data'].nodes[rend_id]
-                        plt.scatter(nC['x'], nC['y'], c='blue', zorder=4)  # 无人机客户实心点
-                        plt.annotate("", xy=(nC['x'], nC['y']), xytext=(nL['x'], nL['y']),
-                                     arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
-                        plt.annotate("", xy=(nR['x'], nR['y']), xytext=(nC['x'], nC['y']),
-                                     arrowprops=dict(arrowstyle="->", color="skyblue", ls="--", lw=1.5), zorder=2)
+                        arr_p2 = step_res['full_arrival_next'].get(p2, float('inf'))
+                        is_traveled = arr_p2 <= decision_time + 1e-9
+                        ls = '-' if is_traveled else '--'
+                        lw = 2.2 if is_traveled else 1.0
+                        alpha = 0.95 if is_traveled else 0.45
 
-                    plt.axis('equal')
-                    plt.grid(True, linestyle='--', alpha=0.5)
+                        ax.plot([x1, x2], [y1, y2], color='red', linestyle=ls, linewidth=lw, alpha=alpha, zorder=3)
+                        ax.annotate("", xy=(x2, y2), xytext=(x1, y1),
+                                    arrowprops=dict(arrowstyle="-|>", color="red", lw=lw, alpha=alpha), zorder=4)
+
+                    # 8. 画无人机伴飞路径 (区分是否已完成)
+                    for (launch_id, cust_id, rend_id) in triplets_viz:
+                        nL = data_viz.nodes[launch_id]
+                        nC = data_viz.nodes[cust_id]
+                        nR = data_viz.nodes[rend_id]
+
+                        fin_c = step_res['full_finish_next'].get(cust_id, float('inf'))
+                        is_done = fin_c <= decision_time + 1e-9
+                        color = 'gray' if is_done else 'skyblue'
+                        alpha = 0.6 if is_done else 1.0
+                        ls = '-' if is_done else '--'
+
+                        ax.plot([nL['x'], nC['x']], [nL['y'], nC['y']], color=color, linestyle=ls, linewidth=1.5,
+                                alpha=alpha, zorder=3)
+                        ax.annotate("", xy=(nC['x'], nC['y']), xytext=(nL['x'], nL['y']),
+                                    arrowprops=dict(arrowstyle="->", color=color, ls=ls, lw=1.5, alpha=alpha), zorder=4)
+
+                        ax.plot([nC['x'], nR['x']], [nC['y'], nR['y']], color=color, linestyle=ls, linewidth=1.5,
+                                alpha=alpha, zorder=3)
+                        ax.annotate("", xy=(nR['x'], nR['y']), xytext=(nC['x'], nC['y']),
+                                    arrowprops=dict(arrowstyle="->", color=color, ls=ls, lw=1.5, alpha=alpha), zorder=4)
+
+                    # 添加右侧图例
+                    from matplotlib.lines import Line2D
+                    legend_elements = [
+                        Line2D([0], [0], marker='s', color='w', markerfacecolor='yellow', markeredgecolor='black',
+                               markersize=9, label='中心仓库'),
+                        Line2D([0], [0], marker='*', color='w', markerfacecolor='yellow', markeredgecolor='black',
+                               markersize=10, label='基站'),
+                        Line2D([0], [0], marker='o', color='blue', markerfacecolor='white', markeredgecolor='blue',
+                               markersize=8, label='卡车客户'),
+                        Line2D([0], [0], marker='o', color='blue', markerfacecolor='blue', markeredgecolor='blue',
+                               markersize=8, label='无人机客户'),
+                        Line2D([0], [0], color='red', lw=1.6, label='卡车路径'),
+                        Line2D([0], [0], color='skyblue', lw=1.2, linestyle='--', label='无人机路径'),
+                    ]
+                    ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.02, 1.0), frameon=False,
+                              fontsize=9)
+                    fig = plt.gcf()
+                    fig.subplots_adjust(right=0.80)
                     plt.show()
                 else:
                     # 原来的 ALNS/独立基站模式画图
