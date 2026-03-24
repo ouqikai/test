@@ -112,7 +112,108 @@ CFG_D = {
 "disable_postcheck": 0,
 "lambda_prom": 0.0
 }
+CFG_25 = {
+    "NAME": "Proposed_N25_LNS",
+    "PAIRING_MODE": "free",
+    "late_hard": 0.1,
+    "late_hard_delta": 1.0,
+    "qf_cost_max": 30.0,
+    "qf_late_max": 0.5,
 
+    # ===== 核心调参区 (针对 N=25，模拟纯 LNS) =====
+    "alns_max_iter": 1000,
+    "max_no_improve": 1000,
+    "sa_T_start": 10.0,  # [极低初温] 25 个点的 ΔCost 很小，10.0 的初温让算法更接近“贪心爬山”，找到最优解就死死咬住不放！
+    "sa_T_end": 0.1,  # 降温降到底
+    "remove_fraction": 0.20,  # [微调破坏] 25 * 0.20 = 5，每次只拔 5 个点
+    "min_remove": 3,  # [极小下限] 允许做 3 个点的微小重组
+
+    "rl_eta": 0.0,  # 🚨 [LNS 核心终极开关] 将反应因子设为 0！这会直接关闭自适应权重更新，所有算子保持初始的等概率随机调用，彻底退化为纯 LNS！
+    # ============================================
+
+    "DESTROYS": ["D_random_route", "D_worst_route", "D_reloc_focus_v2", "D_switch_coverage", "D_late_worst"],
+    "REPAIRS": ["R_greedy_only", "R_regret_only", "R_greedy_then_drone", "R_regret_then_drone",
+                "R_late_repair_reinsert", "R_base_feasible_drone_first"],
+    "dbg_alns": False,
+    "dbg_postcheck": False,
+    "disable_postcheck": 0,
+    "lambda_prom": 0.0
+}
+CFG_50 = {
+    "NAME": "Proposed_N50",
+    "PAIRING_MODE": "free",
+    "late_hard": 0.1,
+    "late_hard_delta": 1.0,
+    "qf_cost_max": 30.0,
+    "qf_late_max": 0.5,
+
+    # ===== 核心调参区 (针对 N=50) =====
+    "alns_max_iter": 1000,   # 最大迭代1000代
+    "max_no_improve": 1000,  # [关闭早停] 设为与最大迭代次数一致，强制跑满全过程
+    "sa_T_start": 40.0,      # 50个点不需要太高的初温，40.0足以跳出局部陷阱
+    "sa_T_end": 1.0,
+    "remove_fraction": 0.15, # 50 * 0.15 ≈ 7.5，每次拔掉7-8个点进行重组
+    "min_remove": 5,         # 保底破坏下限
+    # ==================================
+
+    "DESTROYS": ["D_random_route", "D_worst_route", "D_reloc_focus_v2", "D_switch_coverage", "D_late_worst"],
+    "REPAIRS": ["R_greedy_only", "R_regret_only", "R_greedy_then_drone", "R_regret_then_drone",
+                "R_late_repair_reinsert", "R_base_feasible_drone_first"],
+    "dbg_alns": False,
+    "dbg_postcheck": False,
+    "disable_postcheck": 0,
+    "lambda_prom": 0.0
+}
+CFG_100 = {
+    "NAME": "Proposed_N100",
+    "PAIRING_MODE": "free",
+    "late_hard": 0.1,
+    "late_hard_delta": 1.0,
+    "qf_cost_max": 30.0,
+    "qf_late_max": 0.5,
+
+    # ===== 核心调参区 (针对 N=100) =====
+    "alns_max_iter": 1000,   # [延长迭代] 空间太大，1000代可能不够，拉长到1500代
+    "max_no_improve": 1000,  # [关闭早停] 强制跑满1500代，获取完整降温收益
+    "sa_T_start": 80.0,     # [高温越狱] 核心！100.0的高初温，让前期能接受大量劣解，彻底打乱初始的平庸路线
+    "sa_T_end": 1.0,
+    "remove_fraction": 0.18, # [大尺度破坏] 100 * 0.18 = 18，每次连根拔起约 18 个客户！
+    "min_remove": 10,        # [提高下限] 保底破坏 10 个，绝不允许做无意义的微小扰动
+    # ==================================
+
+    "DESTROYS": ["D_random_route", "D_worst_route", "D_reloc_focus_v2", "D_switch_coverage", "D_late_worst"],
+    "REPAIRS": ["R_greedy_only", "R_regret_only", "R_greedy_then_drone", "R_regret_then_drone",
+                "R_late_repair_reinsert", "R_base_feasible_drone_first"],
+    "dbg_alns": False,
+    "dbg_postcheck": False,
+    "disable_postcheck": 0,
+    "lambda_prom": 0.0
+}
+CFG_200 = {
+    "NAME": "Proposed_N200",
+    "PAIRING_MODE": "free",
+    "late_hard": 0.1,
+    "late_hard_delta": 1.0,
+    "qf_cost_max": 30.0,
+    "qf_late_max": 0.5,
+
+    # ===== 核心调参区 (针对 N=200) =====
+    "alns_max_iter": 1000,   # [保持不变] 维持 1000 代的控制变量
+    "max_no_improve": 1000,  # [关闭早停] 强制跑满 1000 代
+    "sa_T_start": 60.0,     # [超高温越狱] 200规模极度容易陷入局部死胡同，必须用极高的初温赋予其前期“疯狂试探”的能量
+    "sa_T_end": 1.0,
+    "remove_fraction": 0.10, # [大尺度破坏] 200 * 0.15 = 30，每次连根拔起重组 30 个客户，这是一个极其庞大的邻域！
+    "min_remove": 10,        # [提高下限] 保底也要破坏 15 个点
+    # ==================================
+
+    "DESTROYS": ["D_random_route", "D_worst_route", "D_reloc_focus_v2", "D_switch_coverage", "D_late_worst"],
+    "REPAIRS": ["R_greedy_only", "R_regret_only", "R_greedy_then_drone", "R_regret_then_drone",
+                "R_late_repair_reinsert", "R_base_feasible_drone_first"],
+    "dbg_alns": False,
+    "dbg_postcheck": False,
+    "disable_postcheck": 0,
+    "lambda_prom": 0.0
+}
 CFG_GA = {
     "NAME": "Baseline_GA",
     "name": "Baseline_GA",     # <--- [补齐] 适配 CSV 输出的 name 字段
@@ -328,7 +429,8 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
         finish_times = full_eval0["finish_times"]
         base_finish_times = {}
 
-    elif planner_type in ["GRB", "GUROBI"]:
+    # elif planner_type in ["GRB", "GUROBI"]: # 框架组
+    elif False: # 算法组
         # ================= [Scene 0: 你的主方法 / 纯卡车 (Gurobi求解)] =================
 
         rows_0 = []
@@ -1147,96 +1249,98 @@ def run_compare_suite(
     print(f"[COMPARE] written: {compare_csv_path} (rows={len(all_rows)})")
     return compare_csv_path
 
+
 def main():
     """
-    中文注释：主入口（不再使用命令行参数，所有实验参数集中在此处配置）。
-    你只需要改下面这些变量即可复现：
-    - file_path / events_path
-    - seed / cfg / perturbation_times
-    - road_factor（路况系数：只影响卡车弧距离=欧氏×系数，从而影响卡车时间/迟到与卡车距离成本）
+    【终极全自动化跑批入口】
+    一键运行所有规模、所有随机种子、所有对比算法的动态/静态实验。
     """
     print("[BOOT]", __file__, "DEBUG_LATE=", DEBUG_LATE, "DEBUG_LATE_SCENES=", DEBUG_LATE_SCENES)
 
-    # ===== 1) 实验输入 =====
-    file_path = r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\nodes_25_seed2023_20260129_164341_promise.csv"
-    events_path = r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\events_25_seed2023_20260129_164341.csv"
-    # file_path = r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\nodes_50_seed2023_20260129_174717_promise.csv"
-    # events_path = r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\events_50_seed2023_20260129_174717.csv"
-    # file_path = r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\nodes_100_seed2023_20260129_190818_promise.csv"
-    # events_path = r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\events_100_seed2023_20260129_190818.csv"
-    # file_path = r"D:\代码\ALNS+DL\exp\runs\nodes_200_seed2023_20260309_140841_promise.csv"
-    # events_path = r"D:\代码\ALNS+DL\exp\runs\events_200_seed2023_20260309_140841.csv"
-    seed = 2023
-    cfg = dict(CFG_D)
-    cfg.update({"use_rl": False,          # <--- 开启 RL
-        "rl_eta": 0.1,
-        "reloc_focus_mode": "rej_first",
-        "drone_first_pick": "min_obj",
-    })
+    # 1. 统一定义实验套件任务 (任务规模, 节点集路径, 事件集路径)
+    # 你只需要在这里把你要跑的路径填好，想跑哪个就把哪行取消注释
+    experiment_tasks = [
+        (25,  r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\nodes_25_seed2023_20260129_164341_promise.csv",
+              r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\events_25_seed2023_20260129_164341.csv"),
 
-    # cfg["planner"] = "GRB"  # 让 dynamic_logic 走 gurobi 分支
-    cfg["planner"] = "ALNS"
-    # cfg["planner"] = "FSTSP"
-    cfg["grb_time_limit"] = 1800  # 每个决策点的 MILP 限时（秒）
-    cfg["grb_mip_gap"] = 0.00  # 可选
-    cfg["grb_verbose"] = 0  # 可选：0 安静，1 输出更多
-    cfg["trace_converge"] = bool(cfg.get("save_iter_trace", False))
-    if cfg["trace_converge"]:
-        cfg["trace_csv_path"] = "outputs"
-    else:
-        cfg.pop("trace_csv_path", None)
+        (50,  r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\nodes_50_seed2023_20260129_174717_promise.csv",
+              r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\events_50_seed2023_20260129_174717.csv"),
 
-    # 动态模式：决策点（小时），t=0 场景系统自动包含
+        # (100, r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\nodes_100_seed2023_20260129_190818_promise.csv",
+        #  r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\events_100_seed2023_20260129_190818.csv"),
+        #
+        # (200, r"D:\代码\ALNS+DL\exp\runs\nodes_200_seed2023_20260309_140841_promise.csv",
+        #  r"D:\代码\ALNS+DL\exp\runs\events_200_seed2023_20260309_140841.csv")
+    ]
+
+    # 2. 建立规模到配置的自动映射字典
+    # 确保你的代码上方已经定义了 CFG_25, CFG_50, CFG_100, CFG_200
+    cfg_map = {
+        25: CFG_25,  # 假设你 25 规模用的是 CFG_A，或者是你定义的 CFG_25
+        50: CFG_50,
+        100: CFG_100,
+        200: CFG_200
+    }
+
+    # 3. 全局公共参数
+    TRUCK_ROAD_FACTOR = 1.5
+    sim.set_simulation_params(road_factor=TRUCK_ROAD_FACTOR)
     perturbation_times = [1.0, 2.0]
+    SEEDS_TO_RUN = [2021, 2022, 2023, 2024, 2025]  # 5 个种子取平均
+    # ================= [核心：对比组切换开关] =================
+    # 只需要修改这个变量："model" (框架对比) 或 "algo" (算法对比)
+    SUITE_LEVEL = "algo"
 
-    enable_plot = True
-    verbose = True
+    if SUITE_LEVEL == "model":
+        # 【模型/框架对比】：纯卡车 vs 经典伴飞 FSTSP vs 你的独立基站混合模型(Proposed)
+        # 目的：证明你的“独立基站+车机协同”这种物理架构的优越性
+        TARGET_METHODS = ["Gurobi", "Gurobi_TruckOnly", "FSTSP"]
+        suite_prefix = "model_compare"
 
-    # ===== 2) 路况系数（唯一入口：只放大卡车距离，不改速度）=====
-    # 初始化仿真参数
-    road_factor = 1.5
-    sim.set_simulation_params(road_factor=road_factor)
-    # 并且建议定义本地快捷变量，如果下面有用到
-    TRUCK_SPEED_UNITS = sim.get_simulation_params()["TRUCK_SPEED_UNITS"]
-    print(f"[PARAM] TRUCK_ROAD_FACTOR={sim.TRUCK_ROAD_FACTOR:.3f}; TRUCK_SPEED_UNITS={TRUCK_SPEED_UNITS:.3f} units/h (fixed); truck_arc = euclid * {sim.TRUCK_ROAD_FACTOR:.3f}")
+    elif SUITE_LEVEL == "algo":
+        # 【算法对比】：在同样的“独立基站混合模型”架构下，对比不同的启发式算法
+        # 目的：证明你的 ALNS 算法比传统的 GA、VNS、贪心算得更好、更快
+        # TARGET_METHODS = ["Proposed", "Greedy", "GA", "VNS"]
+        TARGET_METHODS = ["Proposed", "Greedy", "GA", "VNS", "Gurobi"]
+        suite_prefix = "algo_compare"
 
-    # ===== 3) 运行模式开关 =====
-    # 3.4 对照组套件：G0–G3（动态对比）
-    RUN_COMPARE_SUITE = True
+    else:
+        TARGET_METHODS = ["Proposed"]
+        suite_prefix = "single_test"
+    # ==========================================================
 
-    if RUN_COMPARE_SUITE:
-        import os, time, csv, copy
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    master_suite_dir = os.path.join("../runs/outputs", "suites", f"m{suite_prefix}_{ts}")
+    os.makedirs(master_suite_dir, exist_ok=True)
 
-        # 你要跑的 5 个 algo_seed
-        SEEDS_TO_RUN = [2021, 2022, 2023, 2024, 2025]
+    master_index_rows = []
 
-        # 选择对比层面：模型(model) 或 算法(algo)
-        SUITE_LEVEL = "model"  # "model" 或 "algo"
-        if SUITE_LEVEL == "model":
-            # 模型层面：纯卡车 vs 混合（主方法）
-            TARGET_METHODS = ["Gurobi", "Gurobi_TruckOnly", "FSTSP"]
-            # TARGET_METHODS = ["Gurobi_TruckOnly"]
-        elif SUITE_LEVEL == "algo":
-            # 算法层面：固定混合模型，对比多算法
-            # TARGET_METHODS = ["Gurobi", "Greedy", "GA", "Proposed", "VNS"]
-            # TARGET_METHODS = ["Greedy", "GA", "Proposed", "VNS"]
-            TARGET_METHODS = ["Proposed"]
-        else:
-            TARGET_METHODS = None  # 全跑（一般不建议）
+    for scale, file_path, events_path in experiment_tasks:
+        print(f"\n{'=' * 20} 🚀 开始测试规模: N={scale} {'=' * 20}")
+
+        # 自动挂载对应规模的专属配置
+        base_cfg = dict(cfg_map[scale])
+        base_cfg.update({
+            "use_rl": False,
+            "rl_eta": 0.1,
+            "reloc_focus_mode": "rej_first",
+            "drone_first_pick": "min_obj",
+            "grb_time_limit": 1800,  # 统一给 Gurobi 设 1800 秒截断
+            "grb_mip_gap": 0.00,  # 大规模允许 5% Gap
+        })
 
         base_name = os.path.splitext(os.path.basename(file_path))[0]
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        suite_dir = os.path.join("../runs/outputs", "suites", f"suite_{SUITE_LEVEL}_{base_name}_{ts}")
-        os.makedirs(suite_dir, exist_ok=True)
+        scale_dir = os.path.join(master_suite_dir, f"Scale_{scale}")
+        os.makedirs(scale_dir, exist_ok=True)
 
-        index_rows = []
         for algo_seed in SEEDS_TO_RUN:
-            run_dir = os.path.join(suite_dir, f"seed_{algo_seed}")
+            print(f"\n--- 规模 N={scale} | Seed={algo_seed} ---")
+            run_dir = os.path.join(scale_dir, f"seed_{algo_seed}")
             os.makedirs(run_dir, exist_ok=True)
 
-            # 深拷贝，避免 cfg 串组污染
-            cfg_run = copy.deepcopy(cfg)
-            print("[SUITE] TARGET_METHODS =", TARGET_METHODS)
+            cfg_run = copy.deepcopy(base_cfg)
+
+            # 执行核心跑批函数
             csv_path = run_compare_suite(
                 file_path=file_path,
                 seed=algo_seed,
@@ -1244,32 +1348,29 @@ def main():
                 perturbation_times=perturbation_times,
                 events_path=events_path,
                 out_dir=run_dir,
-                enable_plot=True,
+                enable_plot=False,  # 跑批时强制关掉画图，否则会弹出一堆图卡住程序
                 verbose=False,
                 target_methods=TARGET_METHODS,
             )
-            index_rows.append({"algo_seed": algo_seed, "csv": os.path.relpath(csv_path, suite_dir)})
 
-        # 写总索引：你后续画图只需要读这个
-        index_path = os.path.join(suite_dir, "suite_index.csv")
-        with open(index_path, "w", newline="", encoding="utf-8-sig") as f:
-            w = csv.DictWriter(f, fieldnames=["algo_seed", "csv"])
-            w.writeheader()
-            w.writerows(index_rows)
+            master_index_rows.append({
+                "scale": scale,
+                "algo_seed": algo_seed,
+                "csv_path": os.path.relpath(csv_path, master_suite_dir)
+            })
 
-        print("[SUITE] suite_dir =", suite_dir)
-        print("[SUITE] index =", index_path)
-        return
+    # 5. 保存全局总索引
+    master_index_path = os.path.join(master_suite_dir, "master_index.csv")
+    import csv
+    with open(master_index_path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=["scale", "algo_seed", "csv_path"])
+        w.writeheader()
+        w.writerows(master_index_rows)
 
-    # ===== 7) 正常动态运行（你平时跑的模式）=====
+    print(f"\n🎉 所有规模测试完毕！")
+    print(f"📁 数据总目录: {master_suite_dir}")
+    print(f"📄 全局索引表: {master_index_path}")
 
-    results = run_one(
-        file_path=file_path, seed=seed, ab_cfg=cfg,
-        perturbation_times=perturbation_times,
-        enable_plot=enable_plot, verbose=verbose,
-        events_path=events_path, decision_log_path=''
-    )
-    ut.print_summary_table(results)
 
 if __name__ == "__main__":
     main()
