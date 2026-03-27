@@ -21,7 +21,7 @@ EVENT_ID,EVENT_TIME,NODE_ID,NEW_X,NEW_Y,EVENT_CLASS,DELTA_AVAIL_H
 运行后输出：nodes_<N>_seed<seed>_<timestamp>.csv 以及 events_<N>_seed<seed>_<timestamp>.csv
 """
 
-import csv
+import csv, os
 import math
 import random
 import datetime
@@ -1286,42 +1286,128 @@ def generate_nodes_and_events(
         json.dump(events_meta, _f, ensure_ascii=False, indent=2)
 
 if __name__ == "__main__":
-    # 默认：生成 25 客户、5 个 seed 的离线 nodes.csv + events.csv
-    seed_list = [2023]
+    # # 默认：生成 25 客户、5 个 seed 的离线 nodes.csv + events.csv
     # seed_list = [2021, 2022, 2023, 2024, 2025]
-    n_customers = 200
+    # scales = [25, 50, 100, 200]
+    #
+    # # 事件参数（全局统一控制变量）
+    # rho_rel = 0.2
+    # n_per_dec = 25
+    # decision_times = [1, 2, 3, 4, 5, 6, 7, 8]
+    #
+    # delta_look_h = 6
+    # class_probs = {"IN_DB": 0.6, "CROSS_DB": 0.2, "OUT_DB": 0.2}
+    # include_central_as_base = True
+    # # 统一输出主目录
+    # base_dir = "datasets"
+    # os.makedirs(base_dir, exist_ok=True)
+    #
+    # print(f"🚀 开始批量生成动态协同配送基准数据集...")
+    # for n_customers in scales:
+    #     scale_dir = os.path.join(base_dir, f"{n_customers}_data")
+    #     os.makedirs(scale_dir, exist_ok=True)
+    #     # 严格对齐实验表格中的物理环境设置：n - drone_range - db - scale
+    #     if n_customers == 25:
+    #         v_range = 100.0
+    #         db_cnt = 3
+    #     elif n_customers == 50:
+    #         v_range = 100.0
+    #         db_cnt = 6
+    #     elif n_customers == 100:
+    #         v_range = 150.0
+    #         db_cnt = 8
+    #     elif n_customers == 200:
+    #         v_range = 200.0
+    #         db_cnt = 12
+    #     else:
+    #         v_range = 100.0
+    #         db_cnt = max(1, int(n_customers * 0.12))
+    #
+    #     for s in seed_list:
+    #         seed_dir = os.path.join(scale_dir, str(s))
+    #         os.makedirs(seed_dir, exist_ok=True)
+    #
+    #         # 配置生成器
+    #         cfg = GenConfig(
+    #             n_customers=n_customers,
+    #             visual_range=v_range,
+    #             drone_roundtrip_km=10.0,
+    #             truck_road_factor=1.5,
+    #             seed=int(s),
+    #             base_count_override={n_customers: db_cnt},
+    #         )
+    #
+    #         # 规范化文件命名，去掉时间戳，便于 test-main.py 自动寻址
+    #         out_nodes = os.path.join(seed_dir, f"nodes_{n_customers}_seed{s}.csv")
+    #         out_events = os.path.join(seed_dir, f"events_{n_customers}_seed{s}.csv")
+    #
+    #         print(f"\n[GENERATING] 规模: N={n_customers} | 地图: {v_range}x{v_range} | 基站: {db_cnt} | 种子: {s}")
+    #
+    #         generate_nodes_and_events(
+    #             cfg, out_nodes, out_events,
+    #             rho_rel=rho_rel,
+    #             n_per_dec=n_per_dec,
+    #             decision_times=decision_times,
+    #             delta_look_h=delta_look_h,
+    #             class_probs=class_probs,
+    #             include_central_as_base=include_central_as_base,
+    #         )
+    #
+    # print("\n🎉 全量基准数据集生成完毕！请在 datasets/ 目录下查看。")
+    # =======================================================
+    # 实验一：扰动强度敏感性分析 (Sensitivity Analysis) 数据生成
+    # 核心原则：控制规模和种子不变，仅改变扰动比例 rho_rel
+    # =======================================================
 
-    # 事件参数（按论文实验统一）
-    rho_rel = 0.2
-    n_per_dec = 25
-    # 手动指定决策点（小时），可不等间隔；例如 [1, 2] 或 [0.5, 1.5, 3]
-    # decision_times = [1, 2]
-    # decision_times = [1, 2, 3]
-    # decision_times = [1, 2, 3, 4, 5, 6]
+    # 控制变量：固定规模 100，固定种子 2023
+    fixed_scale = 100
+    seed_list = [2023]
+
+    # 【核心自变量】：测试不同的扰动比例（10%, 30%, 50%, 80%）
+    rho_list = [0.1, 0.2, 0.3, 0.5, 0.8]
+
+    # 全局不变的事件参数
     decision_times = [1, 2, 3, 4, 5, 6, 7, 8]
-    # 注意：如果 decision_times 非空，则生成 events 时将忽略 n_per_dec 推导 K
     delta_look_h = 6
     class_probs = {"IN_DB": 0.6, "CROSS_DB": 0.2, "OUT_DB": 0.2}
     include_central_as_base = True
 
-    for s in seed_list:
-        cfg = GenConfig(
-            n_customers=n_customers,visual_range=200.0,
-            drone_roundtrip_km=10.0,
-            truck_road_factor=1.5,
-            seed=int(s), base_count_override={25: 3,
-                50: 6,
-                100: 8, 200: 12},
-        )
-        now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_nodes = f"nodes_{cfg.n_customers}_seed{cfg.seed}_{now}.csv"
-        out_events = f"events_{cfg.n_customers}_seed{cfg.seed}_{now}.csv"
-        generate_nodes_and_events(
-            cfg, out_nodes, out_events,
-            rho_rel=rho_rel,
-            n_per_dec=n_per_dec,
-            decision_times=decision_times,
-            delta_look_h=delta_look_h,
-            class_probs=class_probs,
-            include_central_as_base=include_central_as_base,
-        )
+    # 专门建一个存放敏感性数据的文件夹，避免和主实验数据混淆
+    base_dir = "datasets_sensitivity"
+    os.makedirs(base_dir, exist_ok=True)
+
+    print(f"🚀 开始批量生成【敏感性分析】基准数据集...")
+
+    for rho in rho_list:
+        # 为每个扰动率建一个子文件夹
+        rho_dir = os.path.join(base_dir, f"rho_{rho}")
+        os.makedirs(rho_dir, exist_ok=True)
+
+        for s in seed_list:
+            # 严格对应你表格里 N=100 的物理配置
+            cfg = GenConfig(
+                n_customers=fixed_scale,
+                visual_range=150.0,
+                drone_roundtrip_km=10.0,
+                truck_road_factor=1.5,
+                seed=int(s),
+                base_count_override={100: 8},
+            )
+
+            # 文件名带上 rho，彻底防止混淆
+            out_nodes = os.path.join(rho_dir, f"nodes_{cfg.n_customers}_seed{cfg.seed}_rho{rho}.csv")
+            out_events = os.path.join(rho_dir, f"events_{cfg.n_customers}_seed{cfg.seed}_rho{rho}.csv")
+
+            print(f"\n[GENERATING] 扰动率: {rho * 100}% | 规模: {fixed_scale} | 种子: {s}")
+
+            generate_nodes_and_events(
+                cfg, out_nodes, out_events,
+                rho_rel=rho,  # 动态传入当前的扰动率
+                n_per_dec=25,
+                decision_times=decision_times,
+                delta_look_h=delta_look_h,
+                class_probs=class_probs,
+                include_central_as_base=include_central_as_base,
+            )
+
+    print("\n🎉 敏感性分析数据集生成完毕！请在 datasets_sensitivity/ 目录下查看。")

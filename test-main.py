@@ -1292,7 +1292,7 @@ def main():
     # 3. 全局公共参数
     TRUCK_ROAD_FACTOR = 1.5
     sim.set_simulation_params(road_factor=TRUCK_ROAD_FACTOR)
-    perturbation_times = [1.0, 2.0]
+    # perturbation_times = [1.0, 2.0]
     SEEDS_TO_RUN = [2023]  # 5 个种子取平均
     # ================= [核心：对比组切换开关] =================
     # 只需要修改这个变量："model" (框架对比) 或 "algo" (算法对比)
