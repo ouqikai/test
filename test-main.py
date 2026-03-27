@@ -1260,15 +1260,15 @@ def main():
     # 1. 统一定义实验套件任务 (任务规模, 节点集路径, 事件集路径)
     # 你只需要在这里把你要跑的路径填好，想跑哪个就把哪行取消注释
     experiment_tasks = [
-        (25,  r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\nodes_25_seed2023_20260129_164341_promise.csv",
-              r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\events_25_seed2023_20260129_164341.csv"),
-
-        (50,  r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\nodes_50_seed2023_20260129_174717_promise.csv",
-              r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\events_50_seed2023_20260129_174717.csv"),
-
-        # (100, r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\nodes_100_seed2023_20260129_190818_promise.csv",
-        #  r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\events_100_seed2023_20260129_190818.csv"),
+        # (25,  r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\nodes_25_seed2023_20260129_164341_promise.csv",
+        #       r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\events_25_seed2023_20260129_164341.csv"),
         #
+        # (50,  r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\nodes_50_seed2023_20260129_174717_promise.csv",
+        #       r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\events_50_seed2023_20260129_174717.csv"),
+
+        (100, r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\nodes_100_seed2023_20260129_190818_promise.csv",
+         r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\events_100_seed2023_20260129_190818.csv"),
+
         # (200, r"D:\代码\ALNS+DL\exp\runs\nodes_200_seed2023_20260309_140841_promise.csv",
         #  r"D:\代码\ALNS+DL\exp\runs\events_200_seed2023_20260309_140841.csv")
     ]
