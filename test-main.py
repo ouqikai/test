@@ -113,7 +113,7 @@ CFG_D = {
 "lambda_prom": 0.0
 }
 CFG_25 = {
-    "NAME": "Proposed_N25_LNS",
+    "NAME": "Alns_N25_LNS",
     "PAIRING_MODE": "free",
     "late_hard": 0.1,
     "late_hard_delta": 1.0,
@@ -140,7 +140,7 @@ CFG_25 = {
     "lambda_prom": 0.0
 }
 CFG_50 = {
-    "NAME": "Proposed_N50",
+    "NAME": "Alns_N50",
     "PAIRING_MODE": "free",
     "late_hard": 0.1,
     "late_hard_delta": 1.0,
@@ -165,7 +165,7 @@ CFG_50 = {
     "lambda_prom": 0.0
 }
 CFG_100 = {
-    "NAME": "Proposed_N100",
+    "NAME": "Alns_N100",
     "PAIRING_MODE": "free",
     "late_hard": 0.1,
     "late_hard_delta": 1.0,
@@ -190,7 +190,7 @@ CFG_100 = {
     "lambda_prom": 0.0
 }
 CFG_200 = {
-    "NAME": "Proposed_N200",
+    "NAME": "Alns_N200",
     "PAIRING_MODE": "free",
     "late_hard": 0.1,
     "late_hard_delta": 1.0,
@@ -1040,7 +1040,7 @@ def run_compare_suite(
 
     可用方法标签（gname）：
     - TruckOnly：纯卡车模型（force_truck_mode=True，仍用 ALNS 优化）
-    - Proposed：你的主方法（混合模型 + ALNS）
+    - Alns：你的主方法（混合模型 + ALNS）
     - Greedy：贪心/预规划基线（对应 dynamic_logic 的 G1 分支）
     - GA：遗传算法
     - Gurobi：MILP（planner=GRB）
@@ -1094,7 +1094,7 @@ def run_compare_suite(
         "grb_time_limit": 1800  # 设个超时时间
     })
     # -----------------------------------------------
-    # G3: Proposed (你的主方法)
+    # G3: Alns (你的主方法)
     # -----------------------------------------------
     cfg_alns_hybrid = dict(cfg_base)
     cfg_alns_hybrid.update({
@@ -1140,7 +1140,7 @@ def run_compare_suite(
 
     # 并在 all_groups 列表中加入它：
     all_groups = [
-        ("Proposed", cfg_alns_hybrid),
+        ("Alns", cfg_alns_hybrid),
         ("Gurobi_TruckOnly", cfg_grb_truck),
         ("FSTSP", cfg_fstsp),
         ("Greedy", cfg_greedy),
@@ -1266,9 +1266,16 @@ def main():
         # (50,  r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\nodes_50_seed2023_20260129_174717_promise.csv",
         #       r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\events_50_seed2023_20260129_174717.csv"),
 
-        (100, r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\nodes_100_seed2023_20260129_190818_promise.csv",
-         r"D:\代码\ALNS+DL\exp\datasets\100_data\2023\events_100_seed2023_20260129_190818.csv"),
-
+        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.1\nodes_100_seed2023_rho0.1.csv",
+         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.1\events_100_seed2023_rho0.1.csv"),
+        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.2\nodes_100_seed2023_rho0.2.csv",
+         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.2\events_100_seed2023_rho0.2.csv"),
+        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.3\nodes_100_seed2023_rho0.3.csv",
+         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.3\events_100_seed2023_rho0.3.csv"),
+        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.5\nodes_100_seed2023_rho0.5.csv",
+         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.5\events_100_seed2023_rho0.5.csv"),
+        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.8\nodes_100_seed2023_rho0.8.csv",
+         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.8\events_100_seed2023_rho0.8.csv"),
         # (200, r"D:\代码\ALNS+DL\exp\runs\nodes_200_seed2023_20260309_140841_promise.csv",
         #  r"D:\代码\ALNS+DL\exp\runs\events_200_seed2023_20260309_140841.csv")
     ]
@@ -1286,13 +1293,13 @@ def main():
     TRUCK_ROAD_FACTOR = 1.5
     sim.set_simulation_params(road_factor=TRUCK_ROAD_FACTOR)
     perturbation_times = [1.0, 2.0]
-    SEEDS_TO_RUN = [2021, 2022, 2023, 2024, 2025]  # 5 个种子取平均
+    SEEDS_TO_RUN = [2023]  # 5 个种子取平均
     # ================= [核心：对比组切换开关] =================
     # 只需要修改这个变量："model" (框架对比) 或 "algo" (算法对比)
     SUITE_LEVEL = "algo"
 
     if SUITE_LEVEL == "model":
-        # 【模型/框架对比】：纯卡车 vs 经典伴飞 FSTSP vs 你的独立基站混合模型(Proposed)
+        # 【模型/框架对比】：纯卡车 vs 经典伴飞 FSTSP vs 你的独立基站混合模型(Alns)
         # 目的：证明你的“独立基站+车机协同”这种物理架构的优越性
         TARGET_METHODS = ["Gurobi", "Gurobi_TruckOnly", "FSTSP"]
         suite_prefix = "model_compare"
@@ -1300,12 +1307,14 @@ def main():
     elif SUITE_LEVEL == "algo":
         # 【算法对比】：在同样的“独立基站混合模型”架构下，对比不同的启发式算法
         # 目的：证明你的 ALNS 算法比传统的 GA、VNS、贪心算得更好、更快
-        # TARGET_METHODS = ["Proposed", "Greedy", "GA", "VNS"]
-        TARGET_METHODS = ["Proposed", "Greedy", "GA", "VNS", "Gurobi"]
+        # TARGET_METHODS = ["Alns", "Greedy", "GA", "VNS"]
+        # TARGET_METHODS = ["Alns", "Greedy", "GA", "VNS", "Gurobi"]
+        # TARGET_METHODS = ["Alns", "Greedy"]
+        TARGET_METHODS = ["Alns"]
         suite_prefix = "algo_compare"
 
     else:
-        TARGET_METHODS = ["Proposed"]
+        TARGET_METHODS = ["Alns"]
         suite_prefix = "single_test"
     # ==========================================================
 
