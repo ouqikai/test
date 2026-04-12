@@ -8,7 +8,18 @@ import simulation as sim
 import utils as ut
 from dynamic_logic import split_route_by_decision_time, add_virtual_truck_position_node
 
-
+def _uniq_triplets(seq):
+    out = []
+    seen = set()
+    for t in (seq or []):
+        try:
+            tt = (int(t[0]), int(t[1]), int(t[2]))
+        except Exception:
+            continue
+        if tt not in seen:
+            seen.add(tt)
+            out.append(tt)
+    return out
 def fstsp_quick_filter(data_cur, full_route_cur, full_triplets_cur, req_override, predefined_xy, ab_cfg):
     """FSTSP 专属的快速过滤器，使用 fstsp_evaluator 评估当前解的弹性"""
     res_work = fstsp_evaluator.evaluate_fstsp_system(
@@ -64,12 +75,16 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
     # 0. 先对当前状态进行一次精密评估，拿到准确的节点完成时间 (finish_times)
     eval_cur = fstsp_evaluator.evaluate_fstsp_system(
         data_cur, full_route_cur, full_triplets_cur,
-        truck_speed_units=sim.TRUCK_SPEED_UNITS, drone_speed_units=sim.DRONE_SPEED_UNITS,
+        truck_speed_units=sim.TRUCK_SPEED_UNITS,
+        drone_speed_units=sim.DRONE_SPEED_UNITS,
         truck_road_factor=sim.TRUCK_ROAD_FACTOR,
-        alpha_drone=0.3, lambda_late=float(ab_cfg.get("lambda_late", 50.0))
+        alpha_drone=0.3,
+        lambda_late=float(ab_cfg.get("lambda_late", 50.0))
     )
     arrival_times = eval_cur.get("arrival_times", {})
     finish_times = eval_cur.get("finish_times", {})
+    depart_times = eval_cur.get("depart_times", eval_cur.get("depart", {}))
+    triplet_times = eval_cur.get("triplet_times", {})
 
     # 1. 提取物理前缀路线与虚拟坐标点
     served_nodes, _, current_node, virtual_pos, prefix_route = split_route_by_decision_time(
@@ -107,12 +122,23 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
         data_next, decisions = data_cur, []
 
     num_acc = sum(1 for d in decisions if str(d[1]).startswith("ACCEPT"))
-
+    active_triplets = []
+    for tri, tt in triplet_times.items():
+        try:
+            t_launch = float(tt["launch_time"])
+            t_recover = float(tt["recover_time"])
+        except Exception:
+            continue
+        if t_launch <= decision_time + 1e-9 and decision_time < t_recover - 1e-9:
+            active_triplets.append(tri)
     # 🚨 核心修复：只将“真正已服务完毕的客户”相关联的无人机三元组推入历史池
     prefix_triplets = []
+    prefix_route_set = set(prefix_route or [])
+
     for t in full_triplets_cur:
         launch_id, cust_id, rendezvous_id = t
-        if cust_id in served_customers:
+        # 中文注释：只有当回收点已经进入物理前缀时，才把该 triplet 视为“前缀已完成”
+        if rendezvous_id in prefix_route_set:
             prefix_triplets.append(t)
 
     # 早停跳过
@@ -120,7 +146,7 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
         return {
             'break': False, 'skip': True,
             'data_next': data_next, 'full_route_next': full_route_cur, 'full_triplets_next': full_triplets_cur,
-            'full_arrival_next': arrival_times, 'full_finish_next': finish_times, 'full_depart_next': {},
+            'full_arrival_next': arrival_times, 'full_finish_next': finish_times, 'full_depart_next': depart_times,
             'stat_record': ut._pack_scene_record(scene_idx, decision_time, eval_cur, num_req=len(req_override),
                                                  num_acc=num_acc, num_rej=len(req_override) - num_acc, alpha_drone=0.3,
                                                  lambda_late=50.0, solver_time=0),
@@ -135,7 +161,44 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
                 'prefix_route': prefix_route
             }
         }
-
+    if active_triplets:
+        full_eval_hold = fstsp_evaluator.evaluate_fstsp_system(
+            data_next, full_route_cur, full_triplets_cur,
+            truck_speed_units=sim.TRUCK_SPEED_UNITS,
+            drone_speed_units=sim.DRONE_SPEED_UNITS,
+            truck_road_factor=sim.TRUCK_ROAD_FACTOR,
+            alpha_drone=0.3,
+            lambda_late=float(ab_cfg.get("lambda_late", 50.0))
+        )
+        return {
+            'break': False,
+            'skip': True,
+            'data_next': data_next,
+            'full_route_next': full_route_cur,
+            'full_triplets_next': full_triplets_cur,
+            'full_arrival_next': full_eval_hold.get('arrival_times', {}),
+            'full_finish_next': full_eval_hold.get('finish_times', {}),
+            'full_depart_next': full_eval_hold.get('depart_times', full_eval_hold.get('depart', {})),
+            'stat_record': ut._pack_scene_record(
+                scene_idx, decision_time, full_eval_hold,
+                num_req=len(req_override),
+                num_acc=num_acc,
+                num_rej=len(req_override) - num_acc,
+                alpha_drone=0.3,
+                lambda_late=50.0,
+                solver_time=0
+            ),
+            'decision_log_rows': [],
+            'full_eval': full_eval_hold,
+            'viz_pack': {
+                'data': data_next,
+                'route': full_route_cur,
+                'triplets': full_triplets_cur,
+                'decisions': decisions,
+                'virtual_pos': virtual_pos,
+                'prefix_route': prefix_route
+            }
+        }
     # 构造 FSTSP 残局 DataFrame (基于 unserved_customers)
     start_idx_for_alns = add_virtual_truck_position_node(data_next, virtual_pos) if virtual_pos else current_node
 
@@ -161,10 +224,16 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
         df_sub_fstsp,
         E_roundtrip_km=float(ab_cfg.get("E_roundtrip_km", 10.0)),
         truck_speed_kmh=float(ab_cfg.get("truck_speed_kmh", 30.0)),
+        truck_road_factor=float(ab_cfg.get("truck_road_factor", sim.TRUCK_ROAD_FACTOR)),
         drone_speed_kmh=float(ab_cfg.get("drone_speed_kmh", 60.0)),
+        alpha=float(ab_cfg.get("alpha_drone", 0.3)),
+        lambda_late=float(ab_cfg.get("lambda_late", 50.0)),
         time_limit=float(ab_cfg.get("grb_time_limit", 600.0)),
+        mip_gap=float(ab_cfg.get("grb_mip_gap", 0.0)),
+        unit_per_km=float(ab_cfg.get("unit_per_km", 5.0)),
         start_node=int(start_idx_for_alns),
-        start_time_h=float(decision_time)
+        start_time_h=float(decision_time),
+        verbose=int(ab_cfg.get("grb_verbose", 0))
     )
 
     # 合并前缀与后缀
@@ -175,7 +244,7 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
         else:
             full_route_next = prefix_route + suffix_route
 
-        full_triplets_next = prefix_triplets + res.get("fstsp_triplets", [])
+        full_triplets_next = _uniq_triplets(prefix_triplets + res.get("fstsp_triplets", []))
     else:
         full_route_next = full_route_cur
         full_triplets_next = full_triplets_cur
@@ -201,7 +270,7 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
         'full_triplets_next': full_triplets_next,
         'full_arrival_next': full_eval.get('arrival_times', {}),
         'full_finish_next': full_eval.get('finish_times', {}),
-        'full_depart_next': full_eval.get('depart', {}),
+        'full_depart_next': full_eval.get('depart_times', full_eval.get('depart', {})),
         'stat_record': stat_record,
         'decision_log_rows': [],
         'full_eval': full_eval,

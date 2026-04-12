@@ -17,7 +17,7 @@
 
 说明：本文件仍保持可直接运行（main()/main_cli()），便于你现有实验脚本与复现流程不改。
 """
-import os, time, json, csv, copy, math
+import os, time, csv, copy, math
 import operatorsnew as ops  # 引入算子模块
 import simulation as sim  # 引入仿真模块
 import utils as ut # 工具模块
@@ -29,6 +29,18 @@ import milp_solver as grb
 import pandas as pd
 import fstsp_solver, fstsp_evaluator
 import fstsp_dynamic_runner
+def _uniq_triplets(seq):
+    out = []
+    seen = set()
+    for t in (seq or []):
+        try:
+            tt = (int(t[0]), int(t[1]), int(t[2]))
+        except Exception:
+            continue
+        if tt not in seen:
+            seen.add(tt)
+            out.append(tt)
+    return out
 DEBUG_QUICK_FILTER = False
 
 # 中文注释：ALNS 内循环调试（建议仅在定位问题时开启，避免刷屏）
@@ -383,7 +395,7 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
     t0_start = time.time()
     t0_start = time.time()
     planner_type = str(ab_cfg.get("planner", "ALNS")).upper()
-
+    best_truck_time = 0.0
     if planner_type == "FSTSP":
         # ================= [Scene 0: 经典伴飞 FSTSP (Gurobi求解)] =================
 
@@ -407,11 +419,12 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
             truck_speed_kmh=float(ab_cfg.get("truck_speed_kmh", 30.0)),
             truck_road_factor=float(ab_cfg.get("truck_road_factor", 1.5)),
             drone_speed_kmh=float(ab_cfg.get("drone_speed_kmh", 60.0)),
-            time_limit=float(ab_cfg.get("grb_time_limit", 1800.0)),  # 给足时间求最优
+            time_limit=float(ab_cfg.get("grb_time_limit", 3600.0)),  # 给足时间求最优
+            mip_gap=float(ab_cfg.get("grb_mip_gap", 0.0)),
             start_node=data.central_idx, start_time_h=0.0
         )
         best_route = res_0["route"]
-        best_triplets = res_0.get("fstsp_triplets", [])
+        best_triplets = _uniq_triplets(res_0.get("fstsp_triplets", []))
         best_b2d = res_0.get("drone_assign", {})  # 兼容用
 
         full_eval0 = fstsp_evaluator.evaluate_fstsp_system(
@@ -423,14 +436,14 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
         best_truck_dist = full_eval0["truck_dist"]
         best_drone_dist = full_eval0["drone_dist"]
         best_total_late = full_eval0["total_late"]
-
+        best_truck_time = float(full_eval0.get("truck_total_time", full_eval0.get("system_time", 0.0)))
         arrival_times = full_eval0["arrival_times"]
         depart_times = {}  # FSTSP简化
         finish_times = full_eval0["finish_times"]
         base_finish_times = {}
 
-    # elif planner_type in ["GRB", "GUROBI"]: # 框架组
-    elif False: # 算法组
+    elif planner_type in ["GRB", "GUROBI"]: # 框架组
+    # elif False: # 算法组
         # ================= [Scene 0: 你的主方法 / 纯卡车 (Gurobi求解)] =================
 
         rows_0 = []
@@ -480,8 +493,9 @@ def run_one(file_path: str, seed: int, ab_cfg: dict, perturbation_times=None, en
             mip_gap=float(ab_cfg.get("grb_mip_gap", 0.0)),
             allowed_bases=allowed_bases_grb,
             visited_bases_for_drone=set(),
-            allow_depot_as_base=True,  # <--- 🚨 核心修复：让主模型也能在t=0时从仓库起飞无人机！
+            allow_depot_as_base=True, # <--- 🚨 核心修复：让主模型也能在t=0时从仓库起飞无人机！
             force_truck_customers=ft,
+            force_pure_truck_M=bool(ab_cfg.get("force_pure_truck_M", False)),
             start_node=data.central_idx,
             start_time_h=0.0
         )
@@ -1091,7 +1105,7 @@ def run_compare_suite(
         "name": "Gurobi_TruckOnly",
         "planner": "GRB",  # 核心：切换为 Gurobi
         "force_truck_mode": True,  # 核心：强制所有点都是卡车
-        "grb_time_limit": 1800  # 设个超时时间
+        "force_pure_truck_M": True,
     })
     # -----------------------------------------------
     # G3: Alns (你的主方法)
@@ -1110,7 +1124,6 @@ def run_compare_suite(
         "name": "Classic_FSTSP",
         "planner": "FSTSP",  # 触发刚写的 dynamic_logic 拦截
         "force_truck_mode": False,
-        "grb_time_limit": 1800,  # Gurobi 求解极慢，建议给 600 秒甚至更多
     })
     # -----------------------------------------------
     # Gurobi: MILP 基线
@@ -1260,22 +1273,22 @@ def main():
     # 1. 统一定义实验套件任务 (任务规模, 节点集路径, 事件集路径)
     # 你只需要在这里把你要跑的路径填好，想跑哪个就把哪行取消注释
     experiment_tasks = [
-        # (25,  r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\nodes_25_seed2023_20260129_164341_promise.csv",
-        #       r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\events_25_seed2023_20260129_164341.csv"),
-        #
+        (25,  r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\nodes_25_seed2023_20260129_164341_promise.csv",
+              r"D:\代码\ALNS+DL\exp\datasets\25_data\2023\events_25_seed2023_20260129_164341.csv"),
+
         # (50,  r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\nodes_50_seed2023_20260129_174717_promise.csv",
         #       r"D:\代码\ALNS+DL\exp\datasets\50_data\2023\events_50_seed2023_20260129_174717.csv"),
 
-        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.1\nodes_100_seed2023_rho0.1.csv",
-         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.1\events_100_seed2023_rho0.1.csv"),
-        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.2\nodes_100_seed2023_rho0.2.csv",
-         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.2\events_100_seed2023_rho0.2.csv"),
-        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.3\nodes_100_seed2023_rho0.3.csv",
-         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.3\events_100_seed2023_rho0.3.csv"),
-        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.5\nodes_100_seed2023_rho0.5.csv",
-         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.5\events_100_seed2023_rho0.5.csv"),
-        (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.8\nodes_100_seed2023_rho0.8.csv",
-         r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.8\events_100_seed2023_rho0.8.csv"),
+        # (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.1\nodes_100_seed2023_rho0.1_promise.csv",
+        #  r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.1\events_100_seed2023_rho0.1.csv"),
+        # (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.2\nodes_100_seed2023_rho0.2_promise.csv",
+        #  r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.2\events_100_seed2023_rho0.2.csv"),
+        # (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.3\nodes_100_seed2023_rho0.3_promise.csv",
+        #  r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.3\events_100_seed2023_rho0.3.csv"),
+        # (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.5\nodes_100_seed2023_rho0.5_promise.csv",
+        #  r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.5\events_100_seed2023_rho0.5.csv"),
+        # (100, r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.8\nodes_100_seed2023_rho0.8_promise.csv",
+        #  r"D:\代码\ALNS+DL\exp\suc-dif data-dif config\datasets_sensitivity\rho_0.8\events_100_seed2023_rho0.8.csv"),
         # (200, r"D:\代码\ALNS+DL\exp\runs\nodes_200_seed2023_20260309_140841_promise.csv",
         #  r"D:\代码\ALNS+DL\exp\runs\events_200_seed2023_20260309_140841.csv")
     ]
@@ -1292,29 +1305,32 @@ def main():
     # 3. 全局公共参数
     TRUCK_ROAD_FACTOR = 1.5
     sim.set_simulation_params(road_factor=TRUCK_ROAD_FACTOR)
-    # perturbation_times = [1.0, 2.0]
-    SEEDS_TO_RUN = [2023]  # 5 个种子取平均
+    perturbation_times = []
+    # SEEDS_TO_RUN = [2025]  # 5 个种子取平均
+    SEEDS_TO_RUN = [2021, 2022, 2023, 2024, 2025]
     # ================= [核心：对比组切换开关] =================
     # 只需要修改这个变量："model" (框架对比) 或 "algo" (算法对比)
-    SUITE_LEVEL = "algo"
+    SUITE_LEVEL = "model"
 
     if SUITE_LEVEL == "model":
         # 【模型/框架对比】：纯卡车 vs 经典伴飞 FSTSP vs 你的独立基站混合模型(Alns)
         # 目的：证明你的“独立基站+车机协同”这种物理架构的优越性
-        TARGET_METHODS = ["Gurobi", "Gurobi_TruckOnly", "FSTSP"]
+        # TARGET_METHODS = ["Gurobi", "Gurobi_TruckOnly", "FSTSP"]
+        # TARGET_METHODS = ["Gurobi_TruckOnly", "FSTSP"]
+        TARGET_METHODS = ["FSTSP"]
+        # TARGET_METHODS = ["Gurobi_TruckOnly"]
         suite_prefix = "model_compare"
 
     elif SUITE_LEVEL == "algo":
         # 【算法对比】：在同样的“独立基站混合模型”架构下，对比不同的启发式算法
         # 目的：证明你的 ALNS 算法比传统的 GA、VNS、贪心算得更好、更快
         # TARGET_METHODS = ["Alns", "Greedy", "GA", "VNS"]
-        # TARGET_METHODS = ["Alns", "Greedy", "GA", "VNS", "Gurobi"]
-        # TARGET_METHODS = ["Alns", "Greedy"]
-        TARGET_METHODS = ["Alns"]
+        TARGET_METHODS = ["Alns", "Greedy", "GA", "VNS", "Gurobi"]
         suite_prefix = "algo_compare"
 
     else:
-        TARGET_METHODS = ["Alns"]
+        # TARGET_METHODS = ["Alns"]
+        TARGET_METHODS = ["Gurobi"]
         suite_prefix = "single_test"
     # ==========================================================
 
@@ -1334,17 +1350,21 @@ def main():
             "rl_eta": 0.1,
             "reloc_focus_mode": "rej_first",
             "drone_first_pick": "min_obj",
-            "grb_time_limit": 1800,  # 统一给 Gurobi 设 1800 秒截断
-            "grb_mip_gap": 0.00,  # 大规模允许 5% Gap
         })
-
+        if scale == 25:
+            base_cfg["grb_time_limit"] = 1800
+            base_cfg["grb_mip_gap"] = 0.00
+        elif scale == 50:
+            base_cfg["grb_time_limit"] = 3600
+            base_cfg["grb_mip_gap"] = 0.05
         base_name = os.path.splitext(os.path.basename(file_path))[0]
         scale_dir = os.path.join(master_suite_dir, f"Scale_{scale}")
         os.makedirs(scale_dir, exist_ok=True)
 
         for algo_seed in SEEDS_TO_RUN:
             print(f"\n--- 规模 N={scale} | Seed={algo_seed} ---")
-            run_dir = os.path.join(scale_dir, f"seed_{algo_seed}")
+            # run_dir = os.path.join(scale_dir, f"seed_{algo_seed}")
+            run_dir = os.path.join(scale_dir, base_name, f"seed_{algo_seed}")
             os.makedirs(run_dir, exist_ok=True)
 
             cfg_run = copy.deepcopy(base_cfg)

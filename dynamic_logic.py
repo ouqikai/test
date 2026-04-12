@@ -1,8 +1,6 @@
 import copy
 import math
 import random
-import os
-import csv
 import simulation as sim
 import numpy as np
 import utils as ut # apply函数依赖这个
@@ -1694,6 +1692,7 @@ def run_decision_epoch(
             visited_bases_for_drone=visited_bases_grb,  # 新增参数
             allow_depot_as_base=False,
             force_truck_customers=ft,
+            force_pure_truck_M=bool(ab_cfg.get("force_pure_truck_M", False)),
             verbose=int(ab_cfg.get("grb_verbose", 0)),
             start_node=int(start_idx_for_alns),
             start_time_h=float(decision_time),

@@ -67,7 +67,7 @@ def solve_milp_return_from_df(
         save_iis_path: str = "model_iis.ilp",
         start_node: Optional[int] = None,
         end_node: Optional[int] = None,
-        start_time_h: float = 0.0,
+        start_time_h: float = 0.0, force_pure_truck_M: bool = False
 ) -> Dict[str, Any]:
     """
     将原 build_and_solve 的“建模+求解+解析”封装成可复用函数（返回结果，不做打印/画图）。
@@ -189,13 +189,17 @@ def solve_milp_return_from_df(
     # 原代码：
     # max_due = max(nodes[c]["due"] for c in customers) if customers else 0.0
     # M_time = (nV * max_dT_km / truck_speed_kmh) + max_due + 10.0
-
-    # 修改后：
-    max_due = max(nodes[c]["due"] for c in customers) if customers else 0.0
-    # 诊断打印原 M 值
-    original_M = (nV * max_dT_km / truck_speed_kmh) + max_due + 10.0
-    # 暴力增大 M (例如 10000)，防止 leakage
-    M_time = 100000.0
+    # max_due = max(nodes[c]["due"] for c in customers) if customers else 0.0
+    # original_M = (nV * max_dT_km / truck_speed_kmh) + max_due + 10.0
+    # M_time = 100000.0
+    # 中文注释：纯卡车与两级协同分开设 M
+    if force_pure_truck_M:
+        M_time = 100000.0
+    else:
+        max_due = max(nodes[c]["due"] for c in customers) if customers else 0.0
+        max_truck_travel_time = nV * (max_dT_km / truck_speed_kmh)
+        max_drone_wait_time = nV * (E_roundtrip_km / drone_speed_kmh)
+        M_time = float(start_time_h) + max_truck_travel_time + max_drone_wait_time + max_due + 100.0
     # ---------- 建模 ----------
     m = gp.Model("static_truck_drone_milp")
     m.Params.OutputFlag = 1 if int(verbose) else 0
