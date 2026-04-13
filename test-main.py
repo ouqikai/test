@@ -1377,8 +1377,8 @@ def main():
                 perturbation_times=perturbation_times,
                 events_path=events_path,
                 out_dir=run_dir,
-                enable_plot=False,  # 跑批时强制关掉画图，否则会弹出一堆图卡住程序
-                verbose=False,
+                enable_plot=True,  # 跑批时强制关掉画图，否则会弹出一堆图卡住程序
+                verbose=True,
                 target_methods=TARGET_METHODS,
             )
 

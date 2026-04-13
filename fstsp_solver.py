@@ -10,6 +10,71 @@ import time
 def euclid(x1, y1, x2, y2):
     return math.hypot(x1 - x2, y1 - y2)
 
+def _sanitize_fstsp_triplets(route_ids, raw_triplets):
+    """
+    中文注释：
+    对 Gurobi 解出来的原始 triplets 做一次后处理清洗，防止出现：
+    1) 起飞点/回收点根本不在卡车 route 上；
+    2) 起飞顺序晚于回收顺序；
+    3) 同一个客户既在 truck route 中，又在 drone triplet 中；
+    4) 同一个客户被多个 triplet 重复服务。
+    """
+    route_ids = [int(x) for x in (route_ids or [])]
+
+    # 记录每个节点在 route 中出现的位置（central 可能出现两次）
+    pos_map = {}
+    for pos, nid in enumerate(route_ids):
+        nid = int(nid)
+        pos_map.setdefault(nid, []).append(pos)
+
+    # FSTSP 的中间节点都是卡车访问客户；若某客户已经在卡车 route 中，就不能再作为 drone 客户
+    truck_customer_set = set(int(x) for x in route_ids[1:-1])
+
+    clean_triplets = []
+    drone_assign = {}
+    seen_triplets = set()
+    seen_customers = set()
+
+    for tri in raw_triplets or []:
+        try:
+            launch_id, cust_id, rendez_id = int(tri[0]), int(tri[1]), int(tri[2])
+        except Exception:
+            continue
+
+        # 1) 同一客户不允许重复服务
+        if cust_id in seen_customers:
+            continue
+
+        # 2) 客户已经在卡车 route 中，则该 triplet 非法
+        if cust_id in truck_customer_set:
+            continue
+
+        # 3) 起飞点、回收点必须都在 route 中
+        if launch_id not in pos_map or rendez_id not in pos_map:
+            continue
+
+        # 4) route 顺序上必须存在“起飞在前、回收在后”
+        feasible_order = False
+        for lp in pos_map[launch_id]:
+            for rp in pos_map[rendez_id]:
+                if lp < rp:
+                    feasible_order = True
+                    break
+            if feasible_order:
+                break
+        if not feasible_order:
+            continue
+
+        tt = (launch_id, cust_id, rendez_id)
+        if tt in seen_triplets:
+            continue
+
+        seen_triplets.add(tt)
+        seen_customers.add(cust_id)
+        clean_triplets.append(tt)
+        drone_assign.setdefault(launch_id, []).append(cust_id)
+
+    return clean_triplets, drone_assign
 
 def solve_fstsp_return_from_df(
         df: pd.DataFrame,
@@ -211,10 +276,8 @@ def solve_fstsp_return_from_df(
 
     truck_route_ids = [idx2id[n] for n in truck_route_idx]
 
-    # 将无人机起降的 (i, j, k) 转换为 ALNS 能读懂的 drone_assign: {base_node: [customer_nodes]}
-    # 在 FSTSP 中，卡车就是基站，起飞点 i 即为 base。
-    fstsp_triplets = []
-    drone_assign = {}  # 保留兼容性
+    # 先提取原始 triplets，再按卡车 route 做合法性清洗
+    raw_triplets = []
     for i in N_out_lst:
         for j in C_lst:
             for k in N_in_lst:
@@ -222,9 +285,9 @@ def solve_fstsp_return_from_df(
                     launch_node_id = idx2id[i]
                     cust_node_id = idx2id[j]
                     rendezvous_id = idx2id[k]
+                    raw_triplets.append((launch_node_id, cust_node_id, rendezvous_id))
 
-                    fstsp_triplets.append((launch_node_id, cust_node_id, rendezvous_id))
-                    drone_assign.setdefault(launch_node_id, []).append(cust_node_id)
+    fstsp_triplets, drone_assign = _sanitize_fstsp_triplets(truck_route_ids, raw_triplets)
 
     return {
         "status": m.Status,

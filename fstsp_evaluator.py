@@ -5,7 +5,6 @@ import math
 def euclid(x1, y1, x2, y2):
     return math.hypot(x1 - x2, y1 - y2)
 
-
 def evaluate_fstsp_system(
         data,
         full_route_ids,
@@ -14,7 +13,9 @@ def evaluate_fstsp_system(
         drone_speed_units=300.0,
         truck_road_factor=1.5,
         alpha_drone=0.3,
-        lambda_late=50.0):
+        lambda_late=50.0,
+        warn_missing=False,
+        debug_missing=False):
     """
     顶刊级 FSTSP 系统评估器
     严格处理卡车在回收点的等待（Time Synchronization），计算绝对准确的延迟和系统完成时间。
@@ -66,6 +67,9 @@ def evaluate_fstsp_system(
                 # 无人机的起飞时间，是卡车【首次】离开 launch_id 的时间
                 l_time = first_depart_times.get(launch_id, None)
                 if l_time is None:
+                    if debug_missing:
+                        print(
+                            f"[FSTSP-MISS-1] launch={launch_id}, cust={cust_id}, rend={curr}, reason=launch_not_departed")
                     missing_triplets.add((launch_id, cust_id, curr))
                     continue
                 node_l = data.nodes[launch_id]
@@ -115,16 +119,17 @@ def evaluate_fstsp_system(
         due = float(node_c.get('effective_due', node_c.get('due_time', 0.0)))
 
         if cust_id not in finish_times:
+            if debug_missing:
+                print(
+                    f"[FSTSP-MISS-2] launch={launch_id}, cust={cust_id}, rend={rend_id}, reason=customer_finish_missing")
             missing_triplets.add((launch_id, cust_id, rend_id))
             continue
 
         fin = finish_times[cust_id]
         if fin > due:
             drone_late += (fin - due)
-
-    if missing_triplets:
+    if missing_triplets and warn_missing:
         print(f"[FSTSP-WARN] 有 {len(missing_triplets)} 个 triplet 未在 full_route 中被实现，已跳过迟到计算；示例={list(missing_triplets)[:5]}")
-
     total_late = truck_late + drone_late
     cost = truck_dist + alpha_drone * drone_dist + lambda_late * total_late
     sys_time = depart_t_prev  # 系统的最终完成时间，是卡车最后离开终点（并回收完所有无人机）的时间

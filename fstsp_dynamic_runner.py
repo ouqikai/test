@@ -20,30 +20,181 @@ def _uniq_triplets(seq):
             seen.add(tt)
             out.append(tt)
     return out
+def _sanitize_triplets_for_route(data, route, triplets, forbidden_customers=None):
+    """
+    中文注释：
+    按“当前 full route”过滤 triplets，避免 triplet 与 route 脱节。
+    forbidden_customers:
+        - 可传入“本轮决策前已经服务完成的客户集合”，用于禁止这些客户再次进入 suffix triplets。
+    """
+    route = [int(x) for x in (route or [])]
+    forbidden_customers = set(int(x) for x in (forbidden_customers or []))
 
+    pos_map = {}
+    for pos, nid in enumerate(route):
+        nid = int(nid)
+        pos_map.setdefault(nid, []).append(pos)
 
+    truck_customer_set = set()
+    for nid in route:
+        try:
+            nid = int(nid)
+            if 0 <= nid < len(data.nodes):
+                if str(data.nodes[nid].get("node_type", "")).lower() == "customer":
+                    truck_customer_set.add(nid)
+        except Exception:
+            continue
+
+    clean = []
+    seen_triplets = set()
+    seen_customers = set()
+
+    for tri in _uniq_triplets(triplets):
+        try:
+            launch_id, cust_id, rendez_id = int(tri[0]), int(tri[1]), int(tri[2])
+        except Exception:
+            continue
+
+        # 已经在决策前完成服务的客户，不允许再出现在新后缀 triplet 中
+        if cust_id in forbidden_customers:
+            continue
+
+        # 同一客户不允许重复服务
+        if cust_id in seen_customers:
+            continue
+
+        # 若该客户已经在卡车 route 中，则不应再作为无人机客户
+        if cust_id in truck_customer_set:
+            continue
+
+        # 起飞/回收节点必须都在 route 中
+        if launch_id not in pos_map or rendez_id not in pos_map:
+            continue
+
+        # 必须存在一组位置满足：起飞在前、回收在后
+        feasible_order = False
+        for lp in pos_map[launch_id]:
+            for rp in pos_map[rendez_id]:
+                if lp < rp:
+                    feasible_order = True
+                    break
+            if feasible_order:
+                break
+        if not feasible_order:
+            continue
+
+        tt = (launch_id, cust_id, rendez_id)
+        if tt in seen_triplets:
+            continue
+
+        seen_triplets.add(tt)
+        seen_customers.add(cust_id)
+        clean.append(tt)
+
+    return clean
+
+def _future_triplets_for_viz(triplet_times, decision_time):
+    """
+    中文注释：
+    只把“当前决策时刻之后仍未回收完成”的 triplet 返回给可视化，
+    避免历史已完成 triplet 在图上继续显示，造成“又送了一次”的错觉。
+    """
+    out = []
+    for tri, tt in (triplet_times or {}).items():
+        try:
+            recover_t = float(tt.get("recover_time", float("inf")))
+        except Exception:
+            continue
+        if recover_t > float(decision_time) + 1e-9:
+            try:
+                out.append((int(tri[0]), int(tri[1]), int(tri[2])))
+            except Exception:
+                continue
+    return _uniq_triplets(out)
+
+def _eval_and_prune_triplets(data, route, triplets, ab_cfg, scene_idx):
+    """
+    中文注释：
+    先静默评估一次，只保留 evaluator 真正执行成功的 triplets。
+    这样可以把无效 triplet 在“当前场景内部”就删掉，
+    避免它们先打印 warning，再拖到下一幕才清理。
+    """
+    triplets = _uniq_triplets(triplets)
+
+    eval_res = fstsp_evaluator.evaluate_fstsp_system(
+        data, route, triplets,
+        truck_speed_units=sim.TRUCK_SPEED_UNITS,
+        drone_speed_units=sim.DRONE_SPEED_UNITS,
+        truck_road_factor=sim.TRUCK_ROAD_FACTOR,
+        alpha_drone=float(ab_cfg.get("alpha_drone", 0.3)),
+        lambda_late=float(ab_cfg.get("lambda_late", 50.0)),
+        warn_missing=False,
+        debug_missing=False
+    )
+
+    executed = set()
+    for tri in eval_res.get("triplet_times", {}).keys():
+        try:
+            executed.add((int(tri[0]), int(tri[1]), int(tri[2])))
+        except Exception:
+            continue
+
+    clean = []
+    for tri in triplets:
+        try:
+            tt = (int(tri[0]), int(tri[1]), int(tri[2]))
+        except Exception:
+            continue
+        if tt in executed:
+            clean.append(tt)
+
+    clean = _uniq_triplets(clean)
+
+    if len(clean) != len(triplets):
+        print(f"[FSTSP-PRUNE] scene={scene_idx} prune {len(triplets) - len(clean)} invalid triplets")
+        eval_res = fstsp_evaluator.evaluate_fstsp_system(
+            data, route, clean,
+            truck_speed_units=sim.TRUCK_SPEED_UNITS,
+            drone_speed_units=sim.DRONE_SPEED_UNITS,
+            truck_road_factor=sim.TRUCK_ROAD_FACTOR,
+            alpha_drone=float(ab_cfg.get("alpha_drone", 0.3)),
+            lambda_late=float(ab_cfg.get("lambda_late", 50.0)),
+            warn_missing=False,
+            debug_missing=False
+        )
+    bad = [tt for tt in triplets if tuple(map(int, tt)) not in executed]
+    if bad:
+        print(f"[FSTSP-PRUNE-DETAIL] scene={scene_idx} bad={bad[:5]}")
+    return clean, eval_res
 def fstsp_quick_filter(data_prelim, full_route_cur, full_triplets_cur, decisions_raw, ab_cfg):
-    """FSTSP 专属的快速过滤器（修复：不再深拷贝，接收物理护栏的 decisions_raw）"""
+    """FSTSP 专属的快速过滤器（修复：兼容 8 元组解包，并规范化返回格式）"""
     res_work = fstsp_evaluator.evaluate_fstsp_system(
         data_prelim, full_route_cur, full_triplets_cur,
         truck_speed_units=sim.TRUCK_SPEED_UNITS, drone_speed_units=sim.DRONE_SPEED_UNITS,
         truck_road_factor=sim.TRUCK_ROAD_FACTOR,
         alpha_drone=float(ab_cfg.get("alpha_drone", 0.3)),
-        lambda_late=float(ab_cfg.get("lambda_late", 50.0))
+        lambda_late=float(ab_cfg.get("lambda_late", 50.0)), warn_missing=False, debug_missing=False
     )
     base_cost = res_work["cost"]
     base_late = res_work["total_late"]
 
-    data_work = data_prelim  # 修复：不再使用 copy.deepcopy，直接在原对象上微调测试
+    data_work = data_prelim
     decisions_filtered = []
 
     qf_cost_max = float(ab_cfg.get("qf_cost_max", 30.0))
     qf_late_max = float(ab_cfg.get("qf_late_max", 0.5))
 
-    # 遍历物理护栏初步审核过的 decisions
-    for (cid, dec, nx, ny, reason) in decisions_raw:
+    # 🚨 核心修复：兼容 decisions_raw 里的 8 元组或 5 元组
+    for it in decisions_raw:
+        if len(it) == 8:
+            cid, nid, dec, reason, ox, oy, nx, ny = it
+        elif len(it) == 5:
+            cid, dec, nx, ny, reason = it
+        else:
+            continue
+
         if dec != "ACCEPT":
-            # 如果物理护栏已经拒绝了（比如已经路过、超出范围），直接继承拒绝结果
+            # 外部要求返回 5 元组以方便做统计
             decisions_filtered.append((cid, dec, nx, ny, reason))
             continue
 
@@ -58,7 +209,7 @@ def fstsp_quick_filter(data_prelim, full_route_cur, full_triplets_cur, decisions
             truck_speed_units=sim.TRUCK_SPEED_UNITS, drone_speed_units=sim.DRONE_SPEED_UNITS,
             truck_road_factor=sim.TRUCK_ROAD_FACTOR,
             alpha_drone=float(ab_cfg.get("alpha_drone", 0.3)),
-            lambda_late=float(ab_cfg.get("lambda_late", 50.0))
+            lambda_late=float(ab_cfg.get("lambda_late", 50.0)), warn_missing=False, debug_missing=False
         )
 
         d_cost = res_trial["cost"] - base_cost
@@ -74,19 +225,20 @@ def fstsp_quick_filter(data_prelim, full_route_cur, full_triplets_cur, decisions
             decisions_filtered.append((cid, "ACCEPT", nx, ny, "满足FSTSP扰动容忍度"))
 
     return data_work, decisions_filtered
+
 def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, full_triplets_cur,
                     full_arrival_cur, offline_groups, nodeid2idx, ab_cfg, seed, verbose=False):
     t_start_total = time.time()
 
-    # 0. 先对当前状态进行一次精密评估，拿到准确的节点完成时间 (finish_times)
-    eval_cur = fstsp_evaluator.evaluate_fstsp_system(
-        data_cur, full_route_cur, full_triplets_cur,
-        truck_speed_units=sim.TRUCK_SPEED_UNITS,
-        drone_speed_units=sim.DRONE_SPEED_UNITS,
-        truck_road_factor=sim.TRUCK_ROAD_FACTOR,
-        alpha_drone=0.3,
-        lambda_late=float(ab_cfg.get("lambda_late", 50.0))
+    # 0. 先把当前 triplets 按 full_route_cur 做一次清洗，避免脏状态继续传下去
+    full_triplets_cur = _sanitize_triplets_for_route(
+        data_cur, full_route_cur, full_triplets_cur
     )
+
+    full_triplets_cur, eval_cur = _eval_and_prune_triplets(
+        data_cur, full_route_cur, full_triplets_cur, ab_cfg, scene_idx
+    )
+
     arrival_times = eval_cur.get("arrival_times", {})
     finish_times = eval_cur.get("finish_times", {})
     depart_times = eval_cur.get("depart_times", eval_cur.get("depart", {}))
@@ -163,6 +315,7 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
 
     # 早停跳过
     if num_acc == 0 and len(req_override) == 0:
+        viz_triplets_hold = _future_triplets_for_viz(triplet_times, decision_time)
         return {
             'break': False, 'skip': True,
             'data_next': data_next, 'full_route_next': full_route_cur, 'full_triplets_next': full_triplets_cur,
@@ -175,27 +328,26 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
             'viz_pack': {
                 'data': data_next,
                 'route': full_route_cur,
-                'triplets': full_triplets_cur,
+                'triplets': viz_triplets_hold,
                 'decisions': decisions,
                 'virtual_pos': virtual_pos,
                 'prefix_route': prefix_route
             }
         }
     if active_triplets:
-        full_eval_hold = fstsp_evaluator.evaluate_fstsp_system(
-            data_next, full_route_cur, full_triplets_cur,
-            truck_speed_units=sim.TRUCK_SPEED_UNITS,
-            drone_speed_units=sim.DRONE_SPEED_UNITS,
-            truck_road_factor=sim.TRUCK_ROAD_FACTOR,
-            alpha_drone=0.3,
-            lambda_late=float(ab_cfg.get("lambda_late", 50.0))
+        full_triplets_hold, full_eval_hold = _eval_and_prune_triplets(
+            data_next, full_route_cur, full_triplets_cur, ab_cfg, scene_idx
+        )
+        viz_triplets_hold = _future_triplets_for_viz(
+            full_eval_hold.get("triplet_times", {}),
+            decision_time
         )
         return {
             'break': False,
             'skip': True,
             'data_next': data_next,
             'full_route_next': full_route_cur,
-            'full_triplets_next': full_triplets_cur,
+            'full_triplets_next': full_triplets_hold,
             'full_arrival_next': full_eval_hold.get('arrival_times', {}),
             'full_finish_next': full_eval_hold.get('finish_times', {}),
             'full_depart_next': full_eval_hold.get('depart_times', full_eval_hold.get('depart', {})),
@@ -213,7 +365,7 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
             'viz_pack': {
                 'data': data_next,
                 'route': full_route_cur,
-                'triplets': full_triplets_cur,
+                'triplets': viz_triplets_hold,
                 'decisions': decisions,
                 'virtual_pos': virtual_pos,
                 'prefix_route': prefix_route
@@ -264,19 +416,34 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
         else:
             full_route_next = prefix_route + suffix_route
 
-        full_triplets_next = _uniq_triplets(prefix_triplets + res.get("fstsp_triplets", []))
+        # 先清洗“历史前缀 triplets”
+        prefix_triplets = _sanitize_triplets_for_route(
+            data_cur, full_route_cur, prefix_triplets
+        )
+
+        # 再清洗“新求解出来的后缀 triplets”
+        # 关键：本轮决策前已经完成服务的客户，禁止再次进入 suffix triplets
+
+        suffix_triplets = _sanitize_triplets_for_route(
+            data_next, full_route_next, res.get("fstsp_triplets", []),
+            forbidden_customers=served_customers
+        )
+        suffix_triplets, _ = _eval_and_prune_triplets(
+            data_next, full_route_next, suffix_triplets, ab_cfg, scene_idx
+        )
+        full_triplets_next = _uniq_triplets(prefix_triplets + suffix_triplets)
     else:
         full_route_next = full_route_cur
         full_triplets_next = full_triplets_cur
 
-    # 全局最终评估
-    full_eval = fstsp_evaluator.evaluate_fstsp_system(
-        data_next, full_route_next, full_triplets_next,
-        truck_speed_units=sim.TRUCK_SPEED_UNITS, drone_speed_units=sim.DRONE_SPEED_UNITS,
-        truck_road_factor=sim.TRUCK_ROAD_FACTOR,
-        alpha_drone=0.3, lambda_late=float(ab_cfg.get("lambda_late", 50.0))
+    full_triplets_next, full_eval = _eval_and_prune_triplets(
+        data_next, full_route_next, full_triplets_next, ab_cfg, scene_idx
     )
-
+    # 仅用于画图：只展示当前时刻之后仍未完成的 triplets
+    viz_triplets_next = _future_triplets_for_viz(
+        full_eval.get("triplet_times", {}),
+        decision_time
+    )
     stat_record = ut._pack_scene_record(
         scene_idx, decision_time, full_eval,
         num_req=len(req_override), num_acc=num_acc, num_rej=len(req_override) - num_acc,
@@ -297,7 +464,7 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
         'viz_pack': {
             'data': data_next,
             'route': full_route_next,
-            'triplets': full_triplets_next,
+            'triplets': viz_triplets_next,
             'decisions': decisions,
             'virtual_pos': virtual_pos,
             'prefix_route': prefix_route
