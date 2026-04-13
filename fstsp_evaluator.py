@@ -32,7 +32,7 @@ def evaluate_fstsp_system(
     depart_times = {}  # 节点真实离开时间
     finish_times = {}  # customer 完成时间
     triplet_times = {}  # (launch, cust, rend) -> 各关键时刻
-    missing_triplets = []  # 提前定义，前后两段逻辑共用
+    missing_triplets = set()  # 提前定义，前后两段逻辑共用
 
     truck_dist = 0.0
     drone_dist = 0.0
@@ -56,16 +56,17 @@ def evaluate_fstsp_system(
             arr_t = depart_t_prev + travel_time
 
         # 记录最新到达时间（如果是中心仓库被多次访问，保留最后返回的时间）
-        arrival_times[curr] = arr_t
+        if curr not in arrival_times:
+            arrival_times[curr] = arr_t
         dep_t = arr_t
 
         # B. 核心：如果该点有无人机回收，卡车必须等待！
-        if curr in recoveries:
+        if curr in recoveries and idx > 0:
             for launch_id, cust_id in recoveries[curr]:
                 # 无人机的起飞时间，是卡车【首次】离开 launch_id 的时间
                 l_time = first_depart_times.get(launch_id, None)
                 if l_time is None:
-                    missing_triplets.append((launch_id, cust_id, curr))
+                    missing_triplets.add((launch_id, cust_id, curr))
                     continue
                 node_l = data.nodes[launch_id]
                 node_c = data.nodes[cust_id]
@@ -114,7 +115,7 @@ def evaluate_fstsp_system(
         due = float(node_c.get('effective_due', node_c.get('due_time', 0.0)))
 
         if cust_id not in finish_times:
-            missing_triplets.append((launch_id, cust_id, rend_id))
+            missing_triplets.add((launch_id, cust_id, rend_id))
             continue
 
         fin = finish_times[cust_id]
@@ -122,8 +123,7 @@ def evaluate_fstsp_system(
             drone_late += (fin - due)
 
     if missing_triplets:
-        print(
-            f"[FSTSP-WARN] 有 {len(missing_triplets)} 个 triplet 未在 full_route 中被实现，已跳过迟到计算；示例={missing_triplets[:5]}")
+        print(f"[FSTSP-WARN] 有 {len(missing_triplets)} 个 triplet 未在 full_route 中被实现，已跳过迟到计算；示例={list(missing_triplets)[:5]}")
 
     total_late = truck_late + drone_late
     cost = truck_dist + alpha_drone * drone_dist + lambda_late * total_late

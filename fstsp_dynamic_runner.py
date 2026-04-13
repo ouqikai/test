@@ -20,10 +20,12 @@ def _uniq_triplets(seq):
             seen.add(tt)
             out.append(tt)
     return out
-def fstsp_quick_filter(data_cur, full_route_cur, full_triplets_cur, req_override, predefined_xy, ab_cfg):
-    """FSTSP 专属的快速过滤器，使用 fstsp_evaluator 评估当前解的弹性"""
+
+
+def fstsp_quick_filter(data_prelim, full_route_cur, full_triplets_cur, decisions_raw, ab_cfg):
+    """FSTSP 专属的快速过滤器（修复：不再深拷贝，接收物理护栏的 decisions_raw）"""
     res_work = fstsp_evaluator.evaluate_fstsp_system(
-        data_cur, full_route_cur, full_triplets_cur,
+        data_prelim, full_route_cur, full_triplets_cur,
         truck_speed_units=sim.TRUCK_SPEED_UNITS, drone_speed_units=sim.DRONE_SPEED_UNITS,
         truck_road_factor=sim.TRUCK_ROAD_FACTOR,
         alpha_drone=float(ab_cfg.get("alpha_drone", 0.3)),
@@ -32,22 +34,27 @@ def fstsp_quick_filter(data_cur, full_route_cur, full_triplets_cur, req_override
     base_cost = res_work["cost"]
     base_late = res_work["total_late"]
 
-    data_work = copy.deepcopy(data_cur)
+    data_work = data_prelim  # 修复：不再使用 copy.deepcopy，直接在原对象上微调测试
     decisions_filtered = []
 
     qf_cost_max = float(ab_cfg.get("qf_cost_max", 30.0))
     qf_late_max = float(ab_cfg.get("qf_late_max", 0.5))
 
-    for cid in req_override:
-        nx, ny = predefined_xy[cid]
+    # 遍历物理护栏初步审核过的 decisions
+    for (cid, dec, nx, ny, reason) in decisions_raw:
+        if dec != "ACCEPT":
+            # 如果物理护栏已经拒绝了（比如已经路过、超出范围），直接继承拒绝结果
+            decisions_filtered.append((cid, dec, nx, ny, reason))
+            continue
 
-        # 假设我们接受这个变更，看看当前伴飞计划的成本变化
-        data_trial = copy.deepcopy(data_work)
-        data_trial.nodes[cid]["x"] = nx
-        data_trial.nodes[cid]["y"] = ny
+        # 记录原坐标，用于回滚
+        old_x, old_y = data_work.nodes[cid]["x"], data_work.nodes[cid]["y"]
+
+        # 假装接受，修改坐标进行评估
+        data_work.nodes[cid]["x"], data_work.nodes[cid]["y"] = nx, ny
 
         res_trial = fstsp_evaluator.evaluate_fstsp_system(
-            data_trial, full_route_cur, full_triplets_cur,
+            data_work, full_route_cur, full_triplets_cur,
             truck_speed_units=sim.TRUCK_SPEED_UNITS, drone_speed_units=sim.DRONE_SPEED_UNITS,
             truck_road_factor=sim.TRUCK_ROAD_FACTOR,
             alpha_drone=float(ab_cfg.get("alpha_drone", 0.3)),
@@ -57,17 +64,16 @@ def fstsp_quick_filter(data_cur, full_route_cur, full_triplets_cur, req_override
         d_cost = res_trial["cost"] - base_cost
         d_late = res_trial["total_late"] - base_late
 
-        # 核心：复用 ALNS 的双阈值标准！
         if d_cost > qf_cost_max or d_late > qf_late_max:
             decisions_filtered.append((cid, "REJECT", nx, ny, f"FSTSP护栏拦截：Δcost={d_cost:.2f}, Δlate={d_late:.2f}"))
+            # 拒绝则还原坐标
+            data_work.nodes[cid]["x"], data_work.nodes[cid]["y"] = old_x, old_y
         else:
-            data_work = data_trial
             base_cost = res_trial["cost"]
             base_late = res_trial["total_late"]
             decisions_filtered.append((cid, "ACCEPT", nx, ny, "满足FSTSP扰动容忍度"))
 
     return data_work, decisions_filtered
-
 def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, full_triplets_cur,
                     full_arrival_cur, offline_groups, nodeid2idx, ab_cfg, seed, verbose=False):
     t_start_total = time.time()
@@ -114,10 +120,27 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
             req_override.append(int(cidx))
             predefined_xy[int(cidx)] = (float(e.get('NEW_X', 0.0)), float(e.get('NEW_Y', 0.0)))
 
-    # 调用 FSTSP 专属快滤网
+    # 调用 FSTSP 专属快滤网（修复：加入物理护栏）
     if req_override:
-        data_next, decisions = fstsp_quick_filter(data_cur, full_route_cur, full_triplets_cur, req_override,
-                                                  predefined_xy, ab_cfg)
+        from dynamic_logic import apply_relocations_for_decision_time, build_client_to_base_map
+
+        # 1. 构造 client_to_base_cur (FSTSP 需要把 triplets 转成 dict 格式供护栏检查)
+        b2d_cur = {}
+        for l_id, c_id, r_id in full_triplets_cur:
+            b2d_cur.setdefault(l_id, []).append(c_id)
+        client_to_base_cur = build_client_to_base_map(b2d_cur)
+
+        # 2. 先过物理规则（拦截已服务、拦截超范围、更新预选基站）
+        data_prelim, decisions_raw, req_clients = apply_relocations_for_decision_time(
+            data_cur, t_prev, decision_time,
+            depart_times, finish_times, arrival_times, client_to_base_cur,
+            req_override, predefined_xy, {}, {}
+        )
+
+        # 3. 再过 FSTSP 成本滤网
+        data_next, decisions = fstsp_quick_filter(
+            data_prelim, full_route_cur, full_triplets_cur, decisions_raw, ab_cfg
+        )
     else:
         data_next, decisions = data_cur, []
 
@@ -131,14 +154,11 @@ def run_fstsp_epoch(decision_time, t_prev, scene_idx, data_cur, full_route_cur, 
             continue
         if t_launch <= decision_time + 1e-9 and decision_time < t_recover - 1e-9:
             active_triplets.append(tri)
-    # 🚨 核心修复：只将“真正已服务完毕的客户”相关联的无人机三元组推入历史池
     prefix_triplets = []
-    prefix_route_set = set(prefix_route or [])
-
     for t in full_triplets_cur:
-        launch_id, cust_id, rendezvous_id = t
-        # 中文注释：只有当回收点已经进入物理前缀时，才把该 triplet 视为“前缀已完成”
-        if rendezvous_id in prefix_route_set:
+        tt = triplet_times.get(t)
+        # 最小修补：只有物理回收时间明确早于决策时间，才算作真正的历史前缀 Triplet
+        if tt and tt.get("recover_time", float('inf')) <= decision_time + 1e-9:
             prefix_triplets.append(t)
 
     # 早停跳过
