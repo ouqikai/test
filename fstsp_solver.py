@@ -167,75 +167,65 @@ def solve_fstsp_return_from_df(
     TUAV = m.addVars(nodeNum, vtype=GRB.CONTINUOUS, lb=0.0, name="TUAV")
     F = m.addVars(nodeNum, vtype=GRB.CONTINUOUS, lb=0.0, name="F")
     L = m.addVars(nodeNum, vtype=GRB.CONTINUOUS, lb=0.0, name="Late")
-
+    # ==================== 从这里开始替换 ====================
+    # 0. 基础覆盖与起终点约束（上次替换时被误删，必须补回！）
+    # 每个客户必须被服务一次（要么被卡车直接访问，要么被无人机服务）
     for j in C_lst:
         m.addConstr(gp.quicksum(X[i, j] for i in N_out_lst if i != j) +
-                    gp.quicksum(Y[i, j, k] for i in N_out_lst for k in N_in_lst if (i, j, k) in P_lst and i != j) == 1)
+                    gp.quicksum(Y[i, j, k] for i in N_out_lst for k in N_in_lst if (i, j, k) in P_lst) == 1)
 
+    # 卡车必须从起点(0)出发，且只出发一次
     m.addConstr(gp.quicksum(X[0, j] for j in N_in_lst) == 1)
+    # 卡车必须回到终点(c+1)，且只回一次
     m.addConstr(gp.quicksum(X[i, c + 1] for i in N_out_lst) == 1)
 
+    # 卡车在中间节点的流平衡约束
     for j in C_lst:
         m.addConstr(
             gp.quicksum(X[i, j] for i in N_out_lst if i != j) == gp.quicksum(X[j, k] for k in N_in_lst if k != j))
 
-    for i in C_lst:
+    # 1. 锚定起点的 U 变量，防止顺序链条悬空
+    m.addConstr(U[0] == 1)
+
+    # 2. MTZ 约束 (消除卡车子环)
+    for i in N_out_lst:
         for j in N_in_lst:
             if i != j:
                 m.addConstr(U[i] - U[j] + (c + 2) * X[i, j] <= c + 1)
 
+    # 3. 强制拓扑时序：起飞点 i 必须在 回收点 k 之前被卡车访问 (彻底修复时空倒流)
     for i in N_out_lst:
-        m.addConstr(gp.quicksum(Y[i, j, k] for j in C_lst for k in N_in_lst if (i, j, k) in P_lst and j != i) <= 1)
-    for k in N_in_lst:
-        m.addConstr(gp.quicksum(Y[i, j, k] for i in N_out_lst for j in C_lst if (i, j, k) in P_lst and i != k) <= 1)
-
-    for i in C_lst:
         for j in C_lst:
-            if j != i:
-                for k in N_in_lst:
-                    if (i, j, k) in P_lst:
-                        m.addConstr(gp.quicksum(X[h, i] for h in N_out_lst if h != i) +
-                                    gp.quicksum(X[l, k] for l in C_lst if l != k) >= 2 * Y[i, j, k])
+            for k in N_in_lst:
+                if (i, j, k) in P_lst:
+                    m.addConstr(U[k] - U[i] >= 1 - M * (1 - Y[i, j, k]), name=f"topo_{i}_{j}_{k}")
 
-    for j in C_lst:
-        for k in N_in_lst:
-            if (0, j, k) in P_lst:
-                m.addConstr(gp.quicksum(X[h, k] for h in N_out_lst if h != k) >= Y[0, j, k])
-
-    for i in C_lst:
-        m.addConstr(
-            T[i] - TUAV[i] <= M * (1 - gp.quicksum(Y[i, j, k] for j in C_lst for k in N_in_lst if (i, j, k) in P_lst)))
-        m.addConstr(
-            TUAV[i] - T[i] <= M * (1 - gp.quicksum(Y[i, j, k] for j in C_lst for k in N_in_lst if (i, j, k) in P_lst)))
+    # 4. 每个起飞/回收点最多只能派发/回收一次无人机
+    for i in N_out_lst:
+        m.addConstr(gp.quicksum(Y[i, j, k] for j in C_lst for k in N_in_lst if (i, j, k) in P_lst) <= 1)
     for k in N_in_lst:
-        m.addConstr(
-            T[k] - TUAV[k] <= M * (1 - gp.quicksum(Y[i, j, k] for i in N_out_lst for j in C_lst if (i, j, k) in P_lst)))
-        m.addConstr(
-            TUAV[k] - T[k] <= M * (1 - gp.quicksum(Y[i, j, k] for i in N_out_lst for j in C_lst if (i, j, k) in P_lst)))
+        m.addConstr(gp.quicksum(Y[i, j, k] for i in N_out_lst for j in C_lst if (i, j, k) in P_lst) <= 1)
 
+    # 5. X 和 Y 的流关联：彻底修复起点 0 作为起飞点时被禁止的 Bug
+    for i in N_out_lst:
+        for j in C_lst:
+            for k in N_in_lst:
+                if (i, j, k) in P_lst:
+                    # i 作为起飞点，必然有卡车从 i 【驶出】（完美兼容起点 0）
+                    m.addConstr(Y[i, j, k] <= gp.quicksum(X[i, h] for h in N_in_lst if h != i))
+                    # k 作为回收点，必然有卡车【驶入】 k（完美兼容终点 c+1）
+                    m.addConstr(Y[i, j, k] <= gp.quicksum(X[l, k] for l in N_out_lst if l != k))
+
+    # 6. 卡车时间传播约束
     for h in N_out_lst:
         for k in N_in_lst:
             if h != k:
                 m.addConstr(T[h] - T[k] + costMatrix[h][k] <= M * (1 - X[h, k]))
 
-    for j in C_lst:
-        for i in N_out_lst:
-            if i != j:
-                m.addConstr(TUAV[i] - TUAV[j] + UAV_factor * costMatrix[i][j] <= M * (
-                            1 - gp.quicksum(Y[i, j, k] for k in N_in_lst if (i, j, k) in P_lst)))
-        for k in N_in_lst:
-            if k != j:
-                m.addConstr(TUAV[j] - TUAV[k] + UAV_factor * costMatrix[j][k] <= M * (
-                            1 - gp.quicksum(Y[i, j, k] for i in N_out_lst if (i, j, k) in P_lst)))
-
-    for k in N_in_lst:
-        for j in C_lst:
-            if j != k:
-                for i in N_out_lst:
-                    if (i, j, k) in P_lst:
-                        m.addConstr(TUAV[k] - TUAV[j] + UAV_factor * costMatrix[i][j] <= (
-                                    E_roundtrip_km / drone_speed_kmh) + M * (1 - Y[i, j, k]))
-
+    # 7. 绑定无人机时间与卡车时间
+    for i in N_out_lst:
+        m.addConstr(TUAV[i] == T[i])
+    # ==================== 替换到这里结束 ====================
     m.addConstr(T[0] == start_time_h)
     m.addConstr(TUAV[0] == start_time_h)
 
